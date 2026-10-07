@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+.DS_Store
+# user recordings — kept out of the repo
+data/*.csv

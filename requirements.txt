@@ -1,0 +1,6 @@
+brainflow>=5.23
+PySide6>=6.6
+pyqtgraph>=0.13
+numpy>=1.24
+scipy>=1.10
+bleak>=0.22
