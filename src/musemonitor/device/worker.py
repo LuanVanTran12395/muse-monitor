@@ -13,6 +13,25 @@ def _seq(d, stream):
     return d[stream.seq_row] if stream.seq_row is not None else None
 
 
+def _version_tuple(v):
+    out = []
+    for part in v.split(".")[:3]:
+        digits = "".join(ch for ch in part if ch.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out)
+
+
+def athena_battery_scale(brainflow_version=None):
+    """Correction for BrainFlow's Athena battery value. BrainFlow ≤ ATHENA_BATTERY_BUGGY_UNTIL divides the
+    raw u16 by 512; the headset's own value (``bp`` in its control response; muse-rs, OpenMuse) is raw/256."""
+    if brainflow_version is None:
+        from importlib.metadata import PackageNotFoundError, version
+        try: brainflow_version = version("brainflow")
+        except PackageNotFoundError: return 1.0
+    buggy = _version_tuple(brainflow_version)[:2] <= C.ATHENA_BATTERY_BUGGY_UNTIL
+    return C.ATHENA_BATTERY_SCALE if buggy else 1.0
+
+
 class MuseWorker(QtCore.QObject):
     """Connects and reads the BrainFlow stream in its own thread; writes CSV when asked."""
     status = QtCore.Signal(str)
@@ -29,6 +48,7 @@ class MuseWorker(QtCore.QObject):
         super().__init__()
         self.serial = serial
         self.spec = spec
+        self.battery_scale = athena_battery_scale()     # BrainFlow ≤ 5.23 reports half the real battery %
         self.board = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -90,7 +110,7 @@ class MuseWorker(QtCore.QObject):
                         if self.recorder: self.recorder.write("optics", ts, optics, seq)
                         self.optics_ready.emit(optics, ts, seq)
                         b = od[sp.battery_row]; b = b[np.isfinite(b) & (b > 0)]
-                        if b.size: self.battery.emit(float(b[-1]))
+                        if b.size: self.battery.emit(float(b[-1]) * self.battery_scale)
 
                 if sp.imu.n and self.board.get_board_data_count(sp.imu.preset) > 0:
                     ad = self.board.get_board_data(preset=sp.imu.preset)

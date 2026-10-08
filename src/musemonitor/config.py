@@ -13,6 +13,10 @@ STREAM_BUFFER = 450000
 SCAN_SEC = 5                     # duration of each BLE scan
 NO_PACKET_WARN_SEC = 5.0         # warn if BLE is connected but no EEG packet arrived yet
 POLL_MS = 20                     # how often the worker reads data from BrainFlow
+# BrainFlow up to this version decodes Athena battery as raw/512 instead of raw/256, so a full
+# battery reads 50%. The worker multiplies by ATHENA_BATTERY_SCALE only for these versions.
+ATHENA_BATTERY_SCALE = 2.0
+ATHENA_BATTERY_BUGGY_UNTIL = (5, 23)
 
 # ---- Display / buffers ------------------------------------------------------
 WINDOW_SEC = 8                   # default time range

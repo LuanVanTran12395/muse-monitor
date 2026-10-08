@@ -77,7 +77,9 @@ elsewhere. Older flat recordings can be moved into session folders, with a repor
 ## Devices
 
 **Muse S Athena** is built in (BrainFlow, preset p1041): EEG TP9/AF7/AF8/TP10 256 Hz, 16 raw
-optical channels 64 Hz, IMU 52 Hz, battery.
+optical channels 64 Hz, IMU 52 Hz, battery. BrainFlow ≤ 5.23 reports Athena's battery at half its
+real value (raw/512 instead of raw/256, so a full battery reads 50%); the app corrects it for those
+versions (`ATHENA_BATTERY_SCALE` in `config.py`).
 
 Other headsets are **optional libraries** found by convention: any importable package named
 `musemonitor_*` that defines `DEVICE_PROFILE` (see `src/musemonitor/device/profiles.py`). The app
