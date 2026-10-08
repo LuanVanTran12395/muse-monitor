@@ -9,7 +9,7 @@ description = "Realtime EEG / PPG / HRV / fNIRS / IMU monitor for Muse S Athena 
 requires-python = ">=3.10"
 dependencies = [
     "brainflow>=5.23",
-    "PySide6>=6.6",
+    "PySide6>=6.6,<6.12",          # 6.12.0 crashes on Python < 3.12 (none_dealloc); see requirements.txt
     "pyqtgraph>=0.13",
     "numpy>=1.24",
     "scipy>=1.10",

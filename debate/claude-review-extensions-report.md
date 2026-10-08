@@ -110,3 +110,11 @@ Toàn bộ: 147 pass, 3 skip.
 **Kiểm tra bằng mắt** trên phiên giả lập 20 s có 3 lần chớp mắt, 1 lần liếc, 1 đợt cắn hàm, 1 đoạn trôi chậm: chỉ 3 lần chớp mắt và đợt cắn hàm bị đánh dấu.
 
 **Vẫn chưa kiểm chứng trên dữ liệu thật đeo tốt:** ngưỡng 100 µV và độ rộng 0,08–0,5 s cần được chỉnh trên bản ghi của người dùng. Plot của bộ phát hiện giúp làm việc này: đỉnh vượt đường ngưỡng mà không có ▼ là bị loại do độ rộng hoặc do chỉ lệch một bên.
+
+## Bổ sung: CI lỗi trên Ubuntu + Python 3.10 do PySide6 6.12.0
+
+Lúc commit, CI của cả hai repo crash ở cùng một cấu hình là Ubuntu + Python 3.10, với lỗi `Fatal Python error: none_dealloc: deallocating None`. Ba cấu hình còn lại pass.
+
+- **Nguyên nhân:** PySide6 6.12.0 (vừa phát hành) trừ refcount của `None` quá tay. Từ Python 3.12, `None` là bất tử nên lỗi không lộ ra; với Python 3.10/3.11 thì crash khi số lần trừ tích luỹ đủ lớn. Vì vậy chạy riêng test thì pass, chạy sau các test khác thì crash.
+- **Bằng chứng:** chạy cùng bộ test trên Ubuntu + Python 3.10 (PR nháp #5, đã đóng): PySide6 6.11 pass, 6.12.0 crash. Faulthandler chỉ vào `pyqtgraph.AxisItem.setTextPen`, nhưng đó chỉ là nơi refcount cuối cùng chạm 0, không phải nơi gây lỗi.
+- **Sửa:** `requirements.txt` và `pyproject.toml` chặn `PySide6>=6.6,<6.12`, có ghi chú lý do. Máy người dùng đang dùng 6.11 nên không bị ảnh hưởng. Khi PySide6 có bản sửa thì nới giới hạn này ra.
