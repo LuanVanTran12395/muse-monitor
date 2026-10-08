@@ -2,6 +2,8 @@
 
 Shows: a realtime data hook (on_eeg), a new tab with plots following theme/time range/markers,
 a companion file next to the recording (<rec>_bandpower.csv), a menu action and private settings.
+Also runs in review windows (supports_review): the recording is replayed through on_eeg, the whole
+history is kept, and the tab shows it up to the scroll position.
 """
 import csv
 from collections import deque
@@ -16,7 +18,7 @@ from musemonitor.storage.recording import companion_path
 
 BANDS = {"delta": (1, 4), "theta": (4, 8), "alpha": (8, 13), "beta": (13, 30), "gamma": (30, 45)}
 SEGMENT_SEC = 2.0          # EEG segment length per computation
-HISTORY = 900              # points kept for the tab
+HISTORY = 900              # points kept for the tab (live; a review window keeps the whole session)
 
 
 def relative_band_power(x, fs):
@@ -44,10 +46,14 @@ class BandPowerTab(BaseTab):
         v.addWidget(pw, 1)
 
     def on_analysis(self):
-        hist, ref = self.ext.history, self.ctx.store.last_ts["eeg"]
-        if not hist or ref is None: return
-        t = np.array([h[0] for h in hist]) - ref
-        vals = np.array([h[1] for h in hist])
+        st = self.ctx.store
+        hist, last, ref = self.ext.history, st.last_ts["eeg"], st.time_ref("eeg")
+        if not hist or last is None or ref is None: return
+        t = np.array([h[0] for h in hist])
+        keep = t <= last                                   # review: only what had happened by the view end
+        if not keep.any(): self.clear(); return
+        vals = np.array([h[1] for h in hist])[keep]
+        t = t[keep] - ref                                  # same time frame as the curves and event markers
         for i, c in enumerate(self.curves.values()): c.setData(t, vals[:, i])
         self.info.setText("  ·  ".join(f"{b} {v:.0f}%" for b, v in zip(BANDS, vals[-1])))
 
@@ -62,17 +68,19 @@ class BandPowerTab(BaseTab):
 class BandPower(Extension):
     id = "band_power"
     name = "Band Power"
+    category = "EEG"             # panels go to Analysis ▸ EEG
     version = "1.0.0"
     description = ("Relative EEG band power (delta…gamma) over time in a new tab; "
                    "while recording also writes <recording>_bandpower.csv.")
     author = "Muse Monitor"
+    supports_review = True
 
     def activate(self, app):
-        self.history = deque(maxlen=HISTORY)
+        self.history = deque(maxlen=None if app.is_review else HISTORY)
         self.every = app.setting("update_sec", 1.0, type=float)    # computation period, adjustable via QSettings
         self.pending = 0; self.file = self.writer = None
         app.add_tab(BandPowerTab(app.view, self))
-        app.add_action("Band power: clear history", self.history.clear)
+        app.add_action("Clear history", self.history.clear)
 
     def on_eeg(self, x, ts):
         # Only count samples here (the hook is called ~50 times/s); compute every `every` seconds

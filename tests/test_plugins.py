@@ -91,7 +91,8 @@ def test_hooks_actions_and_events(make_window, spec, tmp_path):
     assert ext.seen[0] == ("eeg", (spec.eeg.n, spec.eeg.fs), T0 + 1)
     w.add_event("stimulus")
     assert ("event", "stimulus") in ext.seen and len(w.markers) == 1
-    act = next(a for a in w.ext_menu.actions() if a.text() == "Good: ping")
+    sub = next(a.menu() for a in w.ext_menu.actions() if a.menu() is not None)   # Extensions ▸ <name> ▸ …
+    act = next(a for a in sub.actions() if a.text() == "Good: ping")
     act.trigger()
     assert ext.seen[-1] == "ping"
 
@@ -268,7 +269,7 @@ def test_unload_and_reload_extension_during_session(make_window, spec, tmp_path)
     rec = w.extensions.records[0]
     assert rec.status == "unloaded" and inst.closed                       # deactivate() was called
     assert rp.tabs.count() == n_tabs - 1 and all(t.owner != "tabbed" for t in rp.tab_list)
-    assert not any(a.text() == "Tabbed: ping" for a in w.ext_menu.actions())
+    assert not any(a.menu() is not None for a in w.ext_menu.actions())          # its submenu is gone
     assert len(reg.plots) == n_plots - 1 and len(reg.marker_targets) == n_targets - 1
     feed(w, spec, sec=2)                                                  # hooks are no longer called
     assert inst.seen == 0

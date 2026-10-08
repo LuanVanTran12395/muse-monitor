@@ -7,13 +7,32 @@ without changing the app's code.
 ## 1. Create one
 
 ```bash
-PYTHONPATH=src python -m musemonitor.plugins new "My Extension"
+PYTHONPATH=src python -m musemonitor.plugins new "My Extension"                 # category suggested from the name
+PYTHONPATH=src python -m musemonitor.plugins new "Jaw Alert" --category "Data quality"
 ```
 
 You can also use **Extensions ▸ Manage extensions… ▸ New extension…** in the app.
-Both create `extensions/my_extension/__init__.py` from a working template (a tab plus a menu action).
-Edit it, then press **⟳ Update** in the Manage dialog (or **Extensions ▸ Check for new extensions**):
-it appears under **Extensions** and as a new tab on the recording screen, without restarting the app.
+Both create `extensions/my_extension/__init__.py` from a working template (a panel plus a menu action)
+and tell you where it will appear, e.g. `Analysis ▸ EEG ▸ Alpha Peak`. Edit it, then press **⟳ Update**
+in the Manage dialog (or **Extensions ▸ Check for new extensions**), without restarting the app.
+
+### Where your extension appears
+
+| What | Where | Decided by |
+|---|---|---|
+| Panel (each `app.add_tab`) | **Analysis** or **HCI/BCI** menu, in a group; the tab shows only while ticked there | `category` |
+| Actions (`app.add_action`) | **Extensions ▸ ‹extension name› ▸ …** | the extension's `name` |
+| Status, errors, Enable, Unload/Load | **Extensions ▸ Manage extensions…** (column *Menu* shows the placement) | — |
+
+| `category` | Menu |
+|---|---|
+| `"EEG"`, `"Heart & optics"`, `"Data quality"`, `"Other"` (default, also for unknown values) | **Analysis** |
+| `"Eyes"`, `"Motion"` — interaction / brain-computer interface panels | **HCI/BCI** |
+
+Panels start **hidden**; the first time a new panel is loaded, the status bar says where to find it.
+The user's ticks are remembered (separately for the live window and review windows). The three built-in
+tabs (Signals, EEG PSD, PPG · HRV · fNIRS) always show. Pass `app.add_tab(MyTab, shown=True)` to show a
+panel the first time only; after that, the user's choice wins.
 
 **Update** loads extensions that were added since the app started, and retries ones that failed to
 import (fix the file, press Update again). An extension loaded this way first receives
@@ -77,7 +96,9 @@ Override only what you need. A hook you don't override is never called.
 | Attribute / hook | When / what |
 |---|---|
 | `id`, `name`, `version`, `description`, `author` | metadata shown in the manager (`id` defaults to the file or folder name) |
-| `requires_api` | minimum `API_VERSION` needed (currently `1`); newer requirements are refused |
+| `requires_api` | minimum `API_VERSION` needed (the app provides `2`); newer requirements are refused. `1` still works |
+| `category` | API 2. Menu placement of the extension's panels — see [Where your extension appears](#where-your-extension-appears). Default `"Other"` |
+| `supports_review` | API 2. `True` = also run in review windows (**File ▸ Open session**); default `False` (shown as *not applicable* there). See [Review windows](#9-review-windows-api-2) |
 | `supports(spec)` (classmethod) | return `False` when the connected device lacks what you need (e.g. `{"AF7","TP9"} <= set(spec.eeg.names)` or `spec.imu.n >= 6`); the extension then shows **not applicable** instead of failing. Default `True` |
 | `activate(app)` | once at startup. Add tabs and actions, and set up state here |
 | `deactivate()` | app closing or extension disabled after an error. Close files, stop threads |
@@ -88,6 +109,7 @@ Override only what you need. A hook you don't override is never called.
 | `on_recording_started(path)` / `on_recording_stopped()` | recording toggled; `path` is the EEG `.csv` |
 | `on_connected(name)` / `on_disconnected()` | stream started / stopped |
 | `on_theme_changed(theme)` | the light/dark colour dict (see `ui/theme.py`) |
+| `on_view_changed(t_end)` | API 2, review windows only: the view now ends at Unix time `t_end` (scroll, event jump, Time range) |
 
 ## 5. The `app` object (`ExtensionContext`)
 
@@ -95,13 +117,14 @@ Override only what you need. A hook you don't override is never called.
 |---|---|
 | `app.spec` | channels and rates: `spec.eeg.fs`, `spec.eeg.names`, `spec.optics.n`… |
 | `app.store` | signal history: `store.eeg`, `store.eeg_f` (filtered), `store.opt`, `store.imu` are ring buffers; `.get(n)` returns the last `n` samples as `(channels, n)`. `store.eeg_display(n)` matches what the Signals tab shows. `store.last_ts[...]` |
-| `app.add_tab(TabClass)` | add a tab (a `BaseTab` subclass, or an instance) |
-| `app.add_action(text, fn, shortcut=None)` | add an item to the **Extensions** menu |
+| `app.add_tab(TabClass, title=None, shown=None)` | add a panel (a `BaseTab` subclass, or an instance); listed under `category` in Analysis or HCI/BCI, hidden until ticked |
+| `app.add_action(text, fn, shortcut=None)` | add an item to **Extensions ▸ ‹name›** (no need to prefix the text with the extension name) |
 | `app.mark_event(label, t=None)` | create an event, the same as pressing Space |
 | `app.show_status(msg)` | status-bar message |
 | `app.setting(key, default, type=None)` / `app.set_setting(key, value)` | persistent per-extension settings |
 | `app.data_dir` | private folder `~/.musemonitor/data/<id>/` |
 | `app.is_streaming`, `app.is_recording`, `app.recording_path`, `app.window_sec`, `app.theme` | current state |
+| `app.is_review`, `app.view_end` | API 2: `True` in a review window; Unix time of the right edge of the view there (`None` live) |
 | `app.view` | `ViewContext`, if you construct a `BaseTab` yourself |
 | `app.main_window` | direct access to the main window. **Not stable** between versions; avoid it |
 
@@ -172,3 +195,37 @@ Load it in a test window with synthetic data. `tests/test_plugins.py` shows how:
 w = MainWindow(spec, settings=temp_settings, extension_dirs=["path/to/your/extensions"])
 w.on_data(eeg_chunk, ts)   # drive hooks without a headset
 ```
+
+## 9. Review windows (API 2)
+
+**File ▸ Open session** opens a recording in its own window. Extensions run there only if they set
+`supports_review = True`; each review window has its own instances, separate from the live window.
+
+What happens:
+
+1. `activate(app)` is called with `app.is_review == True`. Size your state for a whole session
+   (e.g. `band_power` keeps its full history instead of the last 900 points).
+2. The recording is **replayed** to you in the background: chunks of 0.1 s per stream, all streams and
+   events merged in time order (an event comes after the data up to its time). Each chunk goes to
+   `on_eeg` / `on_optics` / `on_imu` with the raw Unix timestamp of its last sample, as live. During
+   the hook, `app.store` holds exactly what had arrived by then, so code that reads
+   `app.store.eeg_display(n)` in `on_eeg` works unchanged. Chunk sizes differ from live (live chunks
+   follow BrainFlow polling), so stateful code should not depend on chunk size.
+3. When the replay is done, and every time the user scrolls, `on_view_changed(t_end)` is called.
+   Tabs read `ctx.store` as usual: its newest sample is at the scroll position. Draw on the shared
+   axis with `x = t - ctx.store.time_ref("eeg")` and keep only items with `t <= ctx.store.last_ts["eeg"]`
+   — this works in both the live and the review window.
+
+Limits in a review window (nothing is written next to the recording):
+
+- `on_recording_started` / `on_connected` are never called; `app.is_recording` is `False`.
+- `app.mark_event` draws a temporary marker and adds it to the event list; no file is written.
+- `app.set_setting` is kept in memory for that window; QSettings is not changed.
+- `app.add_action` adds to that window's **Extensions** menu; panels are ticked in that window's
+  Analysis / HCI/BCI menus, remembered separately from the live window.
+- **Unload / Load** works, but a re-loaded extension does not get the replay again — reopen the
+  recording for that.
+
+Bundled extensions with review support: `hello_world`, `band_power`, `artifact_log`. The others
+(`eye_interaction`, `head_motion`, `head_motion_plus`) show real-time state (avatar, head pose,
+camera) and stay live-only.

@@ -1,7 +1,7 @@
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ...plugins.loader import default_dir, search_dirs
-from ...plugins.scaffold import create_extension
+from ...plugins.scaffold import create_extension, placement, suggest_category
 
 STATUS_TEXT = {"active": "● Active", "disabled": "○ Disabled", "unloaded": "○ Unloaded", "error": "✕ Error",
                "incompatible": "✕ Incompatible", "loaded": "○ Stopped", "not applicable": "– Not applicable"}
@@ -20,8 +20,8 @@ class ExtensionsDialog(QtWidgets.QDialog):
         hint.setWordWrap(True); hint.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         v.addWidget(hint)
 
-        self.table = QtWidgets.QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Enabled", "Extension", "Version", "Status"])
+        self.table = QtWidgets.QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(["Enabled", "Extension", "Version", "Status", "Menu"])
         self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
@@ -63,7 +63,8 @@ class ExtensionsDialog(QtWidgets.QDialog):
             self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(f"{r.name}  ({r.id})"))
             self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(r.version))
             self.table.setItem(i, 3, QtWidgets.QTableWidgetItem(STATUS_TEXT.get(r.status, r.status)))
-        self.table.resizeColumnToContents(0); self.table.resizeColumnToContents(3)
+            self.table.setItem(i, 4, QtWidgets.QTableWidgetItem(self.manager.location(r)))
+        for c in (0, 3, 4): self.table.resizeColumnToContents(c)
         self.table.blockSignals(False)
 
     def update_extensions(self):
@@ -113,10 +114,13 @@ class ExtensionsDialog(QtWidgets.QDialog):
     def _new(self):
         name, ok = QtWidgets.QInputDialog.getText(self, "New extension", "Extension name:")
         if not ok or not name.strip(): return
+        category = suggest_category(name)
         try:
-            folder = create_extension(name, default_dir())
+            folder = create_extension(name, default_dir(), category)
         except (ValueError, OSError) as e:
             QtWidgets.QMessageBox.warning(self, "New extension", str(e)); return
-        QtWidgets.QMessageBox.information(self, "New extension",
-                                          f"Created {folder / '__init__.py'}\n\nEdit it, then press ⟳ Update to load it.")
+        QtWidgets.QMessageBox.information(
+            self, "New extension",
+            f"Created {folder / '__init__.py'}\n\n" + "\n".join(placement(name, category))
+            + f'\n\nChange category = "{category}" in the file to move it. Edit it, then press ⟳ Update to load it.')
         QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder)))

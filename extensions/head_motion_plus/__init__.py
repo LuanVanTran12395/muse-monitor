@@ -642,6 +642,7 @@ class HeadMotionPlusTab(BaseTab):
 class HeadMotionPlus(Extension):
     id = "head_motion_plus"
     name = "3D Head Motion Plus"
+    category = "Motion"          # panels go to HCI/BCI ▸ Motion
     version = "1.0.0"
     description = ("3D head pose with guided Athena IMU calibration and signal status. Optional: use the "
                    "computer camera (off by default, asks permission) to detect facing the screen.")

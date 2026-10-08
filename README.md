@@ -53,7 +53,7 @@ connection.
    - **Space** marks an event: type a label, Return to save, Esc to cancel. Lines appear on all plots.
    - **Timing** readout: measured rate per stream and timestamp/packet anomalies (see *Timing*).
    - Tabs: **Signals** (EEG, optics, IMU), **EEG PSD** (spectrogram per channel; window / step / max
-     frequency), **PPG · HRV · fNIRS**, plus tabs added by extensions.
+     frequency), **PPG · HRV · fNIRS**, plus the extension panels you tick in the menu bar (below).
 4. **Theme** — Dark / Light, bottom right.
 5. **File menu**
    - **New session** (⌘N) — stops recording (the report is still written), disconnects, clears data and
@@ -62,7 +62,14 @@ connection.
      files in `data/` too). It opens in its own **review window**; the live window keeps running, and
      several recordings can be open side by side. Scroll through the whole session with the scrollbar,
      set the view width with Time range, and click an event in the list to jump to it. Signals, EEG PSD
-     and PPG · HRV · fNIRS work as live; extensions are not run in review windows yet.
+     and PPG · HRV · fNIRS work as live; extensions that support review (see the table below) are
+     replayed the whole recording in the background and follow the scrollbar.
+
+6. **Menu bar**: `File` · `Analysis` · `HCI/BCI` · `Extensions`
+   - **Analysis** — extension panels grouped as EEG, Heart & optics, Data quality, Other.
+   - **HCI/BCI** — interaction panels: Eyes (blink / glance / eye closure), Motion (3D head).
+   - Tick a panel to show it as a tab, untick to hide it; the choice is remembered. Panels start hidden.
+   - **Extensions** — each extension's actions in its own submenu, plus Check for new / Manage.
 
 ## Recording and data
 
@@ -111,17 +118,22 @@ In the app, **Extensions ▸ Manage extensions…**:
 
 Bundled extensions:
 
-| Extension | What it does | Needs |
-|---|---|---|
-| `hello_world` | minimal example: menu action, events, settings | — |
-| `band_power` | relative delta…gamma power over time; `<rec>_bandpower.csv` while recording | EEG |
-| `eye_interaction` | avatar + plots: blinks (AF7/AF8), left/right glances (AF7 − AF8, calibrated), eye closure from TP9/TP10 alpha | Athena EEG |
-| `head_motion`, `head_motion_plus` | 3D head pose from the IMU; *plus*: guided axis calibration and an optional camera "facing the screen" reference (off by default, asks permission, frames never saved) | Athena IMU (+ `opencv-python-headless` for the camera) |
+| Extension | Menu | What it does | Needs | Review |
+|---|---|---|---|---|
+| `hello_world` | Extensions only | minimal example: menu action, events, settings | — | ✓ |
+| `band_power` | Analysis ▸ EEG | relative delta…gamma power over time; `<rec>_bandpower.csv` while recording | EEG | ✓ |
+| `artifact_log` | Analysis ▸ Data quality | marks blinks (peak shape, both frontal channels) and noisy 1 s epochs — EMG, large amplitude, flat signal, head motion — behind each channel's signal, with the blink detector's own trace; explicit, adjustable thresholds; `<rec>_artifacts.csv` while recording | EEG (+ IMU for motion) | ✓ |
+| `eye_interaction` | HCI/BCI ▸ Eyes | avatar + plots: blinks (AF7/AF8), left/right glances (AF7 − AF8, calibrated), eye closure from TP9/TP10 alpha | Athena EEG | — |
+| `head_motion`, `head_motion_plus` | HCI/BCI ▸ Motion | 3D head pose from the IMU; *plus*: guided axis calibration and an optional camera "facing the screen" reference (off by default, asks permission, frames never saved) | Athena IMU (+ `opencv-python-headless` for the camera) | — |
+
+**Review** = also runs in review windows (File ▸ Open session): the recording is replayed to the
+extension and its tab follows the scrollbar (extension API 2, `supports_review`).
 
 Create your own:
 
 ```bash
-PYTHONPATH=src python -m musemonitor.plugins new "My Extension"   # from a working template
+PYTHONPATH=src python -m musemonitor.plugins new "My Extension"   # from a working template; prints its menu placement
+PYTHONPATH=src python -m musemonitor.plugins new "Wink Mouse" --category Eyes   # → HCI/BCI ▸ Eyes
 PYTHONPATH=src python -m musemonitor.plugins list                 # what will be loaded
 ```
 
@@ -192,9 +204,10 @@ project: [CLAUDE.md](CLAUDE.md).
 
 | Module | Role |
 |---|---|
-| `api.py` | The public API: `Extension` (hooks, `supports(spec)`) and `ExtensionContext` (`add_tab`, `add_action`, `mark_event`, settings, data folder). Extensions import only from here. |
+| `api.py` | The public API (version 2): `Extension` (hooks, `supports(spec)`, `supports_review`, `on_view_changed`) and `ExtensionContext` (`add_tab`, `add_action`, `mark_event`, settings, data folder, `is_review`). Extensions import only from here. |
 | `loader.py` | Finds extensions in folders and pip entry points and imports each under a private module name. |
-| `manager.py` | `ExtensionManager`: activate, dispatch hooks only to extensions that override them, isolate errors, enable/disable, runtime Update / Unload / Load, "not applicable" status. |
+| `manager.py` | `ExtensionManager`: activate, dispatch hooks only to extensions that override them, isolate errors, enable/disable, runtime Update / Unload / Load, "not applicable" status (wrong device, or no review support in a review window). |
+| `replay.py` | Feeds a recorded session to extensions in a review window: 0.1 s chunks of every stream and the events, merged in time order, in time-budgeted steps. |
 | `scaffold.py`, `__main__.py` | `python -m musemonitor.plugins new / list`: create a working extension from a template, list what will load. |
 
 **`ui/` — PySide6 / pyqtgraph**
@@ -202,6 +215,7 @@ project: [CLAUDE.md](CLAUDE.md).
 | Module | Role |
 |---|---|
 | `main_window.py` | Controller: wires pages, scanner/worker, `SignalStore`, recording session, event markers and extensions; owns the redraw / analysis / text timers and the File menu (New / Open session). |
+| `panels.py` | `PanelMenus`: the Analysis and HCI/BCI menus — extension panels grouped by category, shown only while ticked, choices remembered. |
 | `review_window.py` | Review window for a recorded session: scrollbar, Time range, event list; asks which device when unsure; loads with a progress dialog. |
 | `context.py` | `ViewContext`: what pages and tabs share (spec, store, settings, plot registry, theme, profile) so they never reference `MainWindow`. |
 | `plotkit.py` | `PlotRegistry`: every plot registers here to follow the theme and time range, lock its x axis, and receive event markers. |

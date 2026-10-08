@@ -3,11 +3,11 @@ import sys
 import traceback
 from dataclasses import dataclass
 
-from .api import API_VERSION, Extension, ExtensionContext
+from .api import API_VERSION, Extension, ExtensionContext, menu_location
 from .loader import discover
 
 HOOKS = ("on_eeg", "on_optics", "on_imu", "on_event", "on_recording_started", "on_recording_stopped",
-         "on_connected", "on_disconnected", "on_theme_changed")
+         "on_connected", "on_disconnected", "on_theme_changed", "on_view_changed")
 DISABLED_KEY = "extensions/disabled"
 
 
@@ -79,7 +79,12 @@ class ExtensionManager:
         return changed
 
     def _supports(self, rec):
-        """Ask whether the extension fits the current device; if not → status "not applicable"."""
+        """Ask whether the extension fits the current device (and, in a review window, whether it declares
+        supports_review); if not → status "not applicable"."""
+        if getattr(self.host, "is_review", False) and not getattr(rec.cls, "supports_review", False):
+            rec.status = "not applicable"
+            rec.error = "Not available in review windows (the extension does not set supports_review = True)."
+            return False
         spec = getattr(self.host, "spec", None)
         try:
             ok = spec is None or bool(rec.cls.supports(spec))
@@ -136,7 +141,8 @@ class ExtensionManager:
     def _activate(self, rec):
         try:
             inst = rec.cls()
-            inst.app = ExtensionContext(rec.id, self.host, self)
+            inst.app = ExtensionContext(rec.id, self.host, self, name=rec.name,
+                                        category=getattr(rec.cls, "category", "Other"))
             rec.instance = inst
             inst.activate(inst.app)
         except BaseException:
@@ -145,6 +151,14 @@ class ExtensionManager:
         rec.status = "active"
         for h in HOOKS:                      # only register overridden hooks → no wasted CPU
             if getattr(type(rec.instance), h) is not getattr(Extension, h): self._subs[h].append(rec)
+
+    def location(self, rec):
+        """Where an extension appears in the menu bar (for the Manage dialog)."""
+        if rec.cls is None: return ""
+        panels = getattr(self.host, "panels", None)
+        has_panel = bool(panels and panels.of_owner(rec.id))
+        if has_panel or rec.status != "active": return menu_location(getattr(rec.cls, "category", "Other"))
+        return f"Extensions ▸ {rec.name} (actions only)"
 
     def active(self):
         return [r for r in self.records if r.status == "active"]

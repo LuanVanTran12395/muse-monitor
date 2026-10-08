@@ -11,6 +11,8 @@ BLOCK_SEC. Streams are split into segments where the raw timestamp jumps by more
 ``max(GAP_MIN_SEC, GAP_PERIODS / fs)``; a fit never spans a gap, and ``time_axis`` puts NaN at the first
 sample after a gap so curves are drawn broken there instead of bridging it.
 """
+import copy
+
 import numpy as np
 
 from .. import config as C
@@ -62,6 +64,9 @@ class _View:
     def get(self, n=None):
         n = self.end if n is None else max(0, min(int(n), self.end))
         return self.x[:, self.end - n:self.end]
+
+    def clone(self):
+        v = copy.copy(self); return v
 
 
 class _Clock:
@@ -171,6 +176,17 @@ class ReviewStore:
         self.latest["imu"] = self.imu.x[:6, self.imu.end - 1].copy() if self.imu.end else None
         self.total_opt, self.total_imu = self.opt.end, self.imu.end
         return t
+
+    def fork(self):
+        """A second cursor over the SAME arrays (no data copied) — used to replay the session to
+        extensions while the window's own cursor follows the scrollbar."""
+        other = copy.copy(self)
+        other.views = {k: v.clone() for k, v in self.views.items()}
+        other.eeg, other.opt, other.imu = other.views["eeg"], other.views["opt"], other.views["imu"]
+        other.eeg_f = self.eeg_f.clone()
+        other.clock = {k: _Clock(other, k) for k in STREAMS}
+        other.last_ts, other.latest = dict(self.last_ts), dict(self.latest)
+        return other
 
     # ---- timing (same names as SignalStore) -------------------------------------------------------------
     def time_axis(self, stream, n):

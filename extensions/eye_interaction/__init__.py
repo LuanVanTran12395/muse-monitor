@@ -518,6 +518,7 @@ class EyeTab(BaseTab):
 class EyeInteraction(Extension):
     id = "eye_interaction"
     name = "Eye Interaction"
+    category = "Eyes"            # panels go to HCI/BCI ▸ Eyes
     version = "0.1.0"
     description = ("Experimental blink and left/right glance detection from frontal EEG, and eye closure "
                    "from posterior alpha.")

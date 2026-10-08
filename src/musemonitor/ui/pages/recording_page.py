@@ -84,6 +84,13 @@ class RecordingPage(QtWidgets.QWidget):
         self._call(tab, "clear")
         return tab
 
+    def set_tab_shown(self, tab, on):
+        """Show or hide an extension tab (panel); hiding the selected tab selects Signals."""
+        i = self.tabs.indexOf(tab)
+        if i < 0: return
+        if not on and self.tabs.currentIndex() == i: self.tabs.setCurrentIndex(0)
+        self.tabs.setTabVisible(i, bool(on))
+
     def remove_tabs(self, owner):
         """Remove every tab of an extension; return the set of PlotItems removed with them."""
         gone = set()

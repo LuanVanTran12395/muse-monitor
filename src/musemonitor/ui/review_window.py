@@ -1,8 +1,13 @@
 """Review window: one recorded session, scrollable, in its own window (the live window keeps running).
 
 Reuses RecordingPage and the built-in tabs on a core.review.ReviewStore. A time scrollbar moves the
-cursor; Time range sets the width of the view; the event list jumps to an event. Extensions are not
-loaded here (phase 1 — see debate/claude-session-review-round-2.md).
+cursor; Time range sets the width of the view; the event list jumps to an event.
+
+Extensions (API 2): only those with ``supports_review = True`` are loaded, by this window's own
+ExtensionManager. The recording is replayed to them in the background (plugins/replay.py) on a
+second cursor (``ReviewStore.fork``), so scrolling is never blocked; afterwards ``on_view_changed``
+follows the scrollbar. Their side effects are contained: mark_event only draws a temporary marker,
+set_setting stays in memory, nothing is recorded.
 """
 import time
 from pathlib import Path
@@ -13,14 +18,18 @@ from .. import config as C
 from ..core.quality import contact_quality
 from ..core.review import ReviewStore
 from ..device.profiles import discover_profiles
+from ..plugins.manager import ExtensionManager
+from ..plugins.replay import Replay
 from ..device.spec import generic_spec
 from ..storage.reader import ReadCancelled, ReaderError, inspect, load, locate
 from ..storage.session import data_root
 from .context import ViewContext
 from .markers import EventMarkers
 from .pages import RecordingPage
+from .panels import PanelMenus
 from .plotkit import PlotRegistry
 from .theme import THEMES, DEFAULT_THEME, apply_app_theme
+from .widgets.extensions_dialog import ExtensionsDialog
 
 SCROLL_UNIT = 0.1                 # seconds per scrollbar step
 GENERIC = "Other device — estimate sampling rates from timestamps"
@@ -38,7 +47,7 @@ def ask_open_path(parent):
     return path or None
 
 
-def open_review(path, settings, profiles, parent=None, choose_profile=None, show=True):
+def open_review(path, settings, profiles, parent=None, choose_profile=None, show=True, extension_dirs=None):
     """Locate → identify the device (asking when unsure) → load with a progress dialog → ReviewWindow.
     Returns the window, or None if the user cancelled or the recording cannot be opened."""
     try:
@@ -60,7 +69,7 @@ def open_review(path, settings, profiles, parent=None, choose_profile=None, show
         return not dlg.wasCanceled()
     try:
         sess = load(info, profile=profile, progress=progress)
-        w = ReviewWindow(sess, settings, profile=profile)
+        w = ReviewWindow(sess, settings, profile=profile, extension_dirs=extension_dirs)
     except ReadCancelled:
         return None
     except (ReaderError, ValueError) as e:
@@ -85,27 +94,45 @@ def _ask_profile(parent, info, options):
 
 class ReviewWindow(QtWidgets.QMainWindow):
     _open = set()                       # keeps review windows alive independently of the live window
+    REPLAY_BUDGET_SEC = 0.03            # per timer tick, so the window stays responsive during the replay
 
-    def __init__(self, session, settings, profile=None):
+    # what ExtensionContext / ExtensionManager read from their host (same names as MainWindow)
+    is_review = True
+    streaming = recording = False
+    rec_path = None
+
+    def __init__(self, session, settings, profile=None, extension_dirs=None, replay=True):
+        """extension_dirs: None = default folders, [] = no extensions. replay=False: start it yourself (tests)."""
         super().__init__()
         self.session = session
+        self.extension_store = None     # the replay cursor while extensions are being fed, else None
         spec = session.spec or generic_spec(session.names, session.rates)
         self.store = ReviewStore(spec, session.streams, session.events)
         self.ctx = ViewContext(spec=spec, store=self.store, settings=settings,
                                plots=PlotRegistry(float(settings.value("window_sec", C.WINDOW_SEC))), profile=profile)
         self.markers = EventMarkers(self.ctx)
+        self.spec = spec
+        self.device_name = session.info.device_name
         files = session.info.files
         self.setWindowTitle(f"{C.APP_NAME} — Review: {files.folder.name if files.meta else files.eeg.stem}"
                             + ("  (sampling rates estimated)" if session.fs_estimated else ""))
         self.resize(1240, 860)
         self._build_ui()
+        self.extensions = ExtensionManager(self, settings, dirs=extension_dirs)
+        self.page.tab_failed.connect(self.extensions.fail)
+        self.extensions.load_all()                          # before markers, so extension plots get event lines too
         for t, label in self.store.events: self.markers.add(t, label)
         self.apply_theme(settings.value("theme", DEFAULT_THEME))
+        self.replay = None
+        self._replay_active = False
+        self._replay_timer = QtCore.QTimer(self); self._replay_timer.setInterval(0)
+        self._replay_timer.timeout.connect(self._replay_tick)
         self._pending = QtCore.QTimer(self); self._pending.setSingleShot(True); self._pending.setInterval(15)
         self._pending.timeout.connect(self.refresh)
         self._update_scroll_range()
         self.go_to(min(self.ctx.window_sec, self.store.duration))
         ReviewWindow._open.add(self)
+        if replay: self.start_replay()
 
     # ---- UI ------------------------------------------------------------------------------------------
     def _build_ui(self):
@@ -152,6 +179,61 @@ class ReviewWindow(QtWidgets.QMainWindow):
                                 ("Close window", QtGui.QKeySequence.Close, self.close)):
             if text is None: menu.addSeparator(); continue
             act = menu.addAction(text); act.setShortcut(key); act.triggered.connect(slot)
+        self.panels = PanelMenus(self, self.page, self.ctx.settings, kind="review")      # Analysis, HCI/BCI
+        self.ext_menu = self.menuBar().addMenu("Extensions")
+        self.ext_menu_sep = self.ext_menu.addSeparator()       # extension actions are inserted above
+        self.ext_menu.addAction("Manage extensions…", lambda: ExtensionsDialog(self.extensions, self).exec())
+        self.ext_status = QtWidgets.QLabel()
+        self.statusBar().addPermanentWidget(self.ext_status)
+
+    # ---- host interface for extensions --------------------------------------------------------------------
+    @property
+    def rec_page(self):
+        return self.page
+
+    def view_end_unix(self):
+        return self.store.t0 + (self.store.view_end or 0.0)
+
+    def remove_extension_tabs(self, owner):
+        self.panels.remove_owner(owner)
+        self.markers.forget_plots(self.page.remove_tabs(owner))
+
+    def add_event(self, label, t=None):
+        """Extension mark_event in review: a temporary marker at the view end (nothing is written)."""
+        t = self.view_end_unix() if t is None else t
+        self.markers.add(t, label); self.markers.place()
+        it = QtWidgets.QListWidgetItem(f"{_fmt_time(t - self.store.t0)}   {label}   (temporary)")
+        it.setData(QtCore.Qt.UserRole, t - self.store.t0); self.ev_list.addItem(it)
+        self.extensions.dispatch("on_event", t, label)
+
+    def on_extension_failed(self, rec):
+        self.statusBar().showMessage(f"Extension '{rec.name}' crashed and was disabled — see Extensions ▸ Manage", 10000)
+
+    # ---- replay to extensions -----------------------------------------------------------------------------
+    def start_replay(self):
+        if not self.extensions.active(): return
+        self.extension_store = self.store.fork()
+        self.replay = Replay(self.extensions, self.extension_store, self.store.events)
+        self.ext_status.setText("Running extensions on the recording… 0%")
+        self._replay_active = True
+        self._replay_timer.start()
+
+    def _replay_tick(self):
+        done = self.replay.step(self.REPLAY_BUDGET_SEC)
+        self.ext_status.setText(f"Running extensions on the recording… {self.replay.progress:.0%}")
+        if done: self._replay_finished()
+
+    def _replay_finished(self):
+        self._replay_active = False
+        self._replay_timer.stop()
+        self.extension_store = None
+        self.ext_status.setText("")
+        self.extensions.dispatch("on_view_changed", self.view_end_unix())
+        self.schedule()
+
+    @property
+    def replaying(self):
+        return self._replay_active
 
     # ---- cursor ----------------------------------------------------------------------------------------
     def _update_scroll_range(self):
@@ -198,6 +280,7 @@ class ReviewWindow(QtWidgets.QMainWindow):
             if hasattr(tab, "tiles_t"): tab.tiles_t = 0.0
             if hasattr(tab, "auto_t"): tab.auto_t = 0.0
         self.page.on_frame(); self.page.on_analysis(); self.page.update_texts()
+        if not self.replaying: self.extensions.dispatch("on_view_changed", self.view_end_unix())
         self.pos_label.setText(f"{_fmt_time(max(0.0, end - T))} – {_fmt_time(end)} / {_fmt_time(self.store.duration)}")
 
     # ---- theme / menu ------------------------------------------------------------------------------------
@@ -205,6 +288,7 @@ class ReviewWindow(QtWidgets.QMainWindow):
         th = self.ctx.th = THEMES.get(name, THEMES[DEFAULT_THEME])
         apply_app_theme(th)                                  # same theme as the live window (from settings)
         self.ctx.plots.apply_theme(th); self.page.apply_theme(th); self.markers.apply_theme()
+        if hasattr(self, "extensions"): self.extensions.dispatch("on_theme_changed", th)
 
     @classmethod
     def apply_theme_all(cls, name):
@@ -219,9 +303,12 @@ class ReviewWindow(QtWidgets.QMainWindow):
 
     def open_another(self):
         path = ask_open_path(self)
-        if path: open_review(path, self.ctx.settings, discover_profiles(), parent=self)
+        if path: open_review(path, self.ctx.settings, discover_profiles(), parent=self, extension_dirs=self.extensions.dirs)
 
     def closeEvent(self, event):
+        self._replay_active = False
+        self._replay_timer.stop()                           # cancel a replay still running
+        self.extensions.shutdown()
         ReviewWindow._open.discard(self)
         self.deleteLater()
         event.accept()

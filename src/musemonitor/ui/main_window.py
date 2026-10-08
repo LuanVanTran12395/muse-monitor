@@ -15,6 +15,7 @@ from ..storage.session import RecordingSession
 from .context import ViewContext
 from .markers import EventMarkers
 from .pages import ConnectPage, FitPage, RecordingPage
+from .panels import PanelMenus
 from .plotkit import PlotRegistry
 from .theme import THEMES, DEFAULT_THEME, apply_app_theme
 from .widgets.event_dialog import ask_event_label
@@ -60,6 +61,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.extensions = ExtensionManager(self, settings, dirs=extension_dirs)
         self.rec_page.tab_failed.connect(self.extensions.fail)
         self.extensions.load_all()
+        self.panels.announce()
         self.apply_theme(settings.value("theme", DEFAULT_THEME))
 
         self._timer(C.REDRAW_MS, self.redraw)
@@ -99,6 +101,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.open_action = self._menu_action(file_menu, "Open session…", QtGui.QKeySequence.Open, self.open_session_dialog)
         file_menu.addSeparator()
         self._menu_action(file_menu, "Close window", QtGui.QKeySequence.Close, self.close)
+        self.panels = PanelMenus(self, self.rec_page, self.ctx.settings, kind="live")     # Analysis, HCI/BCI
 
         self.ext_menu = self.menuBar().addMenu("Extensions")
         self.ext_menu_sep = self.ext_menu.addSeparator()       # extension actions are inserted above
@@ -147,14 +150,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def open_session(self, path, **kw):
         """Open a recording in its own review window; the live window keeps running."""
         from .review_window import open_review
+        kw.setdefault("extension_dirs", self.extensions.dirs)
         return open_review(path, self.ctx.settings, self.profiles, parent=self, **kw)
 
     def remove_extension_tabs(self, owner):
+        self.panels.remove_owner(owner)
         self.markers.forget_plots(self.rec_page.remove_tabs(owner))
 
     def check_new_extensions(self):
         changed = self.extensions.refresh()
         self.statusBar().showMessage(self.extensions.summarize(changed), 8000)
+        if changed: self.panels.announce()
         return changed
 
     def show_extensions(self):

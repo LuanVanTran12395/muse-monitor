@@ -237,6 +237,7 @@ class HeadMotionTab(BaseTab):
 class HeadMotion(Extension):
     id = "head_motion"
     name = "3D Head Motion"
+    category = "Motion"          # panels go to HCI/BCI ▸ Motion
     version = "1.0.0"
     description = "Live 3D head pose estimated from Muse S Athena accelerometer and gyroscope."
 
