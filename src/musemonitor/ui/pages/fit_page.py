@@ -66,6 +66,9 @@ class FitPage(QtWidgets.QWidget):
         self.accept_btn.setStyleSheet("background:#2ea043;color:white;font-weight:bold" if ready else "")
         fill_quality_labels(self.q_labels, sp.eeg.names, qs, self.ctx.th)
 
+    def clear(self):
+        for c in self.curves: c.clear()
+
     def on_frame(self):
         st, fs = self.ctx.store, self.ctx.spec.eeg.fs
         nf = min(st.eeg_f.n, C.FIT_SEC * fs)

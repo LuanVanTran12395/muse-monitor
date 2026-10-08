@@ -17,6 +17,7 @@ class MarkerTarget:
 class PlotRegistry:
     def __init__(self, window_sec):
         self.window_sec = float(window_sec)
+        self.x_end = 0.0                 # right edge of time plots: 0 live (newest sample), cursor time in review
         self.widgets, self.plots, self.legends, self.muted = [], [], [], []
         self.time_plots = []             # plots with a time axis → follow the time range
         self.marker_targets = []
@@ -30,7 +31,7 @@ class PlotRegistry:
         p.showGrid(x=True, y=True, alpha=.25)
         if timed:
             self.time_plots.append(p)
-            self.lock_x(p, lambda: (-self.window_sec, 0.0))
+            self.lock_x(p, lambda: (self.x_end - self.window_sec, self.x_end))
         if marker: self.marker_targets.append(MarkerTarget(p, marker, marker_label, on_image))
         return p
 
@@ -78,7 +79,12 @@ class PlotRegistry:
 
     def set_time_range(self, sec):
         self.window_sec = float(sec)
-        for p in self.time_plots: p.setXRange(-self.window_sec, 0, padding=0)
+        for p in self.time_plots: p.setXRange(self.x_end - self.window_sec, self.x_end, padding=0)
+
+    def set_x_end(self, t):
+        """Review: move every time plot so its right edge is at ``t`` (session seconds)."""
+        self.x_end = float(t)
+        for p in self.time_plots: p.setXRange(self.x_end - self.window_sec, self.x_end, padding=0)
 
     def apply_theme(self, th):
         for w in self.widgets: w.setBackground(th["bg"])

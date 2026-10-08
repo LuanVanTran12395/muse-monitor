@@ -54,3 +54,14 @@ def athena_spec():
         battery_row=BoardShim.get_battery_channel(board, anc),
         n_acc=len(acc),
     )
+
+
+def generic_spec(names, rates):
+    """DeviceSpec for a recording whose device is not a known profile (review only).
+    names / rates: "eeg" | "optics" | "imu" → channel names / sampling rate (Hz); missing streams are empty."""
+    def stream(key, default_fs):
+        n = list(names.get(key, []))
+        return StreamSpec(preset=None, fs=int(round(rates.get(key, default_fs))), rows=list(range(len(n))),
+                          ts_row=None, names=n)
+    return DeviceSpec(board_id=None, eeg=stream("eeg", 256), optics=stream("optics", 64), imu=stream("imu", 52),
+                      battery_row=None, n_acc=sum(1 for n in names.get("imu", []) if n.startswith("acc")))

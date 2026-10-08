@@ -55,6 +55,14 @@ connection.
    - Tabs: **Signals** (EEG, optics, IMU), **EEG PSD** (spectrogram per channel; window / step / max
      frequency), **PPG · HRV · fNIRS**, plus tabs added by extensions.
 4. **Theme** — Dark / Light, bottom right.
+5. **File menu**
+   - **New session** (⌘N) — stops recording (the report is still written), disconnects, clears data and
+     events, and returns to Connect.
+   - **Open session…** (⌘O) — pick a recording folder, its `session.json` or any of its CSV files (old flat
+     files in `data/` too). It opens in its own **review window**; the live window keeps running, and
+     several recordings can be open side by side. Scroll through the whole session with the scrollbar,
+     set the view width with Time range, and click an event in the list to jump to it. Signals, EEG PSD
+     and PPG · HRV · fNIRS work as live; extensions are not run in review windows yet.
 
 ## Recording and data
 
@@ -67,6 +75,7 @@ start. **Stop** closes the files and writes the report:
 | `…_optics.csv`, `…_imu.csv` | optical channels, accelerometer + gyroscope (only for streams the device has) |
 | `…_events.csv` | `timestamp,label` — the automatic `0`, then your Space events |
 | `…_bandpower.csv` etc. | files written by extensions |
+| `session.json` | device profile, device name, app version, start/stop time, and per stream: file, sampling rate, channels, units — lets **Open session** identify the device without guessing |
 | `report.html` | whole-session Welch PSD of every stream, EEG band powers + alpha peak, cardiac peak per optical channel, events |
 | `psd_eeg.csv`, `psd_optics.csv`, `psd_imu.csv` | the PSD values behind the report |
 
@@ -158,6 +167,7 @@ project: [CLAUDE.md](CLAUDE.md).
 | `fnirs.py` | Modified Beer–Lambert: two wavelengths → ΔHbO / ΔHbR with a configurable extinction matrix. |
 | `timing.py` | `StreamClock`: keeps raw timestamps untouched, counts backsteps and `package_num` anomalies, fits the display time axis. |
 | `store.py` | `SignalStore`: the single data source of the UI — buffers for EEG (raw + filtered), optics and IMU, plus timing per stream. |
+| `review.py` | `ReviewStore`: a whole recorded session behind the same read interface as `SignalStore`, with a time cursor; display time follows the live rule, gaps are drawn broken. |
 
 **`device/` — hardware**
 
@@ -174,7 +184,8 @@ project: [CLAUDE.md](CLAUDE.md).
 |---|---|
 | `recording.py` | `Recorder`: one CSV per stream, written in blocks from the worker thread; `companion_path` for files next to a recording. |
 | `events.py` | `EventWriter`: `<recording>_events.csv` (timestamp, label), flushed on every line. |
-| `session.py` | `RecordingSession`: creates `data/muse_<stamp>/`, accumulates whole-session PSD while recording, writes the report on close. |
+| `session.py` | `RecordingSession`: creates `data/muse_<stamp>/` and `session.json`, accumulates whole-session PSD while recording, writes the report on close. |
+| `reader.py` | Opens a recording again: finds its files (new folders and old flat files), identifies the device with a certainty level, reads CSVs in blocks by column name. |
 | `report.py` | Self-contained `report.html` (inline SVG charts) and `psd_*.csv`. |
 
 **`plugins/` — extension system**
@@ -190,7 +201,8 @@ project: [CLAUDE.md](CLAUDE.md).
 
 | Module | Role |
 |---|---|
-| `main_window.py` | Controller: wires pages, scanner/worker, `SignalStore`, recording session, event markers and extensions; owns the redraw / analysis / text timers. |
+| `main_window.py` | Controller: wires pages, scanner/worker, `SignalStore`, recording session, event markers and extensions; owns the redraw / analysis / text timers and the File menu (New / Open session). |
+| `review_window.py` | Review window for a recorded session: scrollbar, Time range, event list; asks which device when unsure; loads with a progress dialog. |
 | `context.py` | `ViewContext`: what pages and tabs share (spec, store, settings, plot registry, theme, profile) so they never reference `MainWindow`. |
 | `plotkit.py` | `PlotRegistry`: every plot registers here to follow the theme and time range, lock its x axis, and receive event markers. |
 | `markers.py` | `EventMarkers`: vertical event lines placed on the shared display time axis of each stream. |

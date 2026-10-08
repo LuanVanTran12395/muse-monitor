@@ -2,7 +2,7 @@
 import time
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import config as C
 from ..core.quality import contact_quality
@@ -47,6 +47,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ev_writer = None
         self.rec_path = None
         self.session = None            # RecordingSession while recording (folder + whole-session PSD)
+        self._pending_new_session = False   # New session waits for the worker / scan to stop first
+        self.report_error = ""
 
         settings = settings if settings is not None else QtCore.QSettings(C.ORG_NAME, "MuseMonitor")
         self.ctx = ViewContext(spec=spec, store=SignalStore(spec), settings=settings,
@@ -92,10 +94,60 @@ class MainWindow(QtWidgets.QMainWindow):
         self.theme_box.currentTextChanged.connect(self.apply_theme)
         bar.addPermanentWidget(QtWidgets.QLabel("Theme:")); bar.addPermanentWidget(self.theme_box)
 
+        file_menu = self.menuBar().addMenu("File")
+        self.new_action = self._menu_action(file_menu, "New session", QtGui.QKeySequence.New, self.new_session)
+        self.open_action = self._menu_action(file_menu, "Open session…", QtGui.QKeySequence.Open, self.open_session_dialog)
+        file_menu.addSeparator()
+        self._menu_action(file_menu, "Close window", QtGui.QKeySequence.Close, self.close)
+
         self.ext_menu = self.menuBar().addMenu("Extensions")
         self.ext_menu_sep = self.ext_menu.addSeparator()       # extension actions are inserted above
         self.ext_menu.addAction("Check for new extensions", self.check_new_extensions)
         self.ext_menu.addAction("Manage extensions…", self.show_extensions)
+
+    @staticmethod
+    def _menu_action(menu, text, key, slot):
+        act = menu.addAction(text); act.setShortcut(key); act.triggered.connect(slot)
+        return act
+
+    # ======================= File: new / open session ==========================
+    def new_session(self):
+        """Start over: stop recording (the report is still written), disconnect, clear data and events,
+        back to Connect. Waits for the worker (or a running scan) to stop before clearing, so a late
+        chunk can never land in the new session."""
+        if self._pending_new_session: return
+        self._new_session_note = ""
+        if self.recording:
+            self.stop_recording()
+            self._new_session_note = self.report_error            # keep a report failure visible after the reset
+        if self.connected or self.scan_thread:
+            self._pending_new_session = True
+            self.new_action.setEnabled(False); self.open_action.setEnabled(False)
+            self.set_status("Starting a new session…")
+            if self.connected: self.disconnect_device()          # → on_stopped → _reset_session
+            return
+        self._reset_session()
+
+    def _reset_session(self):
+        self._pending_new_session = False
+        self.new_action.setEnabled(True); self.open_action.setEnabled(True)
+        self.clear_buffers()
+        self.markers.clear()
+        self.rec_page.clear(); self.fit_page.clear()
+        self.last_qs = None; self._show_quality(None)
+        self.stack.setCurrentIndex(PAGE_CONNECT)
+        note = getattr(self, "_new_session_note", "")
+        self.set_status("New session — choose a device and connect" + (f"  •  {note}" if note else ""))
+
+    def open_session_dialog(self):
+        from .review_window import ask_open_path
+        path = ask_open_path(self)
+        if path: return self.open_session(path)
+
+    def open_session(self, path, **kw):
+        """Open a recording in its own review window; the live window keeps running."""
+        from .review_window import open_review
+        return open_review(path, self.ctx.settings, self.profiles, parent=self, **kw)
 
     def remove_extension_tabs(self, owner):
         self.markers.forget_plots(self.rec_page.remove_tabs(owner))
@@ -126,6 +178,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._show_battery()
         self.ctx.settings.setValue("theme", name)
         if hasattr(self, "extensions"): self.extensions.dispatch("on_theme_changed", th)
+        from .review_window import ReviewWindow
+        ReviewWindow.apply_theme_all(name)
 
     # ======================= Timers ============================================
     def redraw(self):
@@ -221,6 +275,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_scan_done(self):
         if self.scan_thread: self.scan_thread.wait(2000)
         self.scan_thread = None; self.connect_page.set_scanning(False)
+        if self._pending_new_session and not self.connected: self._reset_session()
 
     @QtCore.Slot()
     def connect_selected(self):
@@ -326,6 +381,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.thread:
             self.thread.wait(3000)
             self.thread = None; self.worker = None
+        if self._pending_new_session and not self.scan_thread: self._reset_session()
         if self.closing: self.close()
 
     # ======================= Ghi file ==========================================
@@ -334,7 +390,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.recording: self.stop_recording(); return
         if not self.worker: return
         try:
-            self.session = RecordingSession(self.spec, device=self.device_name)
+            self.session = RecordingSession(self.spec, device=self.device_name, profile_id=self.profile.id)
         except OSError as e:
             self.set_status(f"Cannot create session folder: {e}"); self.session = None; return
         path = str(self.session.eeg_path)
@@ -357,16 +413,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rec_page.set_recording(False)
         report = self._finish_session()
         if report: self.set_status(f"Saved {report.parent.parent.name}/{report.parent.name}/ — report.html")
-        elif self.streaming: self.set_status(f"Streaming EEG • {self.spec.eeg.fs} Hz")
+        elif self.streaming and not self.report_error: self.set_status(f"Streaming EEG • {self.spec.eeg.fs} Hz")
 
     def _finish_session(self):
         """Close the recording session and write the whole-session PSD report; return the report path (or None)."""
         sess, self.session = self.session, None
+        self.report_error = ""
         if sess is None: return None
         try:
             return sess.finish(self.ctx.store.health())
         except Exception as e:                          # a report error must not lose recorded data
-            self.set_status(f"Recording saved to {sess.folder.name}/ but report failed: {type(e).__name__}: {e}")
+            self.report_error = f"Recording saved to {sess.folder.name}/ but report failed: {type(e).__name__}: {e}"
+            self.set_status(self.report_error)
             return None
 
     def closeEvent(self, event):
@@ -382,4 +440,5 @@ class MainWindow(QtWidgets.QMainWindow):
             event.ignore(); return
         self._close_events_file()
         self.extensions.shutdown()
+        QtWidgets.QApplication.instance().removeEventFilter(self)       # the Space filter is app-wide
         event.accept()

@@ -63,7 +63,8 @@ class RecordingPage(QtWidgets.QWidget):
         note = getattr(ctx.profile, "note", "") or (
             f"Research prototype • Athena p1041 • EEG {sp.eeg.fs} Hz + raw optics/PPG {sp.optics.fs} Hz + IMU {sp.imu.fs} Hz. "
             "Optical channel → wavelength mapping is not verified; treat HbO/HbR as exploratory.")
-        outer.addWidget(ctx.plots.muted_label(note))
+        self.note_label = ctx.plots.muted_label(note)
+        outer.addWidget(self.note_label)
 
         self.fixed_scale.toggled.connect(self.signals_tab.apply_scale)
         self.filtered.toggled.connect(self._filter_changed); self.notch.toggled.connect(self._filter_changed)
@@ -175,6 +176,12 @@ class RecordingPage(QtWidgets.QWidget):
 
     def set_quality(self, qs):
         self.signals_tab.set_quality(qs)
+
+    def set_review_mode(self, note):
+        """Reviewing a recorded session: hide the live-only controls, show what is being reviewed."""
+        for w in (self.fit_btn, self.disc_btn, self.record_btn, self.batt_label, self.rate_label, self.count_label):
+            w.hide()
+        self.note_label.setText(note)
 
     def apply_theme(self, th):
         for tab in self.tab_list: self._call(tab, "apply_theme", th)
