@@ -204,7 +204,7 @@ project: [CLAUDE.md](CLAUDE.md).
 
 | Module | Role |
 |---|---|
-| `api.py` | The public API (version 2): `Extension` (hooks, `supports(spec)`, `supports_review`, `on_view_changed`) and `ExtensionContext` (`add_tab`, `add_action`, `mark_event`, settings, data folder, `is_review`). Extensions import only from here. |
+| `api.py` | The public API (version 3): `Extension` (hooks incl. per-sample-timestamp `on_*_samples`, `supports(spec)`, `supports_review`, `category`, `on_view_changed`) and `ExtensionContext` (`add_tab`, `add_action`, `mark_event`, settings, data folder, `is_review`). Extensions import only from here. |
 | `loader.py` | Finds extensions in folders and pip entry points and imports each under a private module name. |
 | `manager.py` | `ExtensionManager`: activate, dispatch hooks only to extensions that override them, isolate errors, enable/disable, runtime Update / Unload / Load, "not applicable" status (wrong device, or no review support in a review window). |
 | `replay.py` | Feeds a recorded session to extensions in a review window: 0.1 s chunks of every stream and the events, merged in time order, in time-budgeted steps. |

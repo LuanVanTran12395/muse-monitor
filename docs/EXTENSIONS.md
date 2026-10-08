@@ -96,7 +96,7 @@ Override only what you need. A hook you don't override is never called.
 | Attribute / hook | When / what |
 |---|---|
 | `id`, `name`, `version`, `description`, `author` | metadata shown in the manager (`id` defaults to the file or folder name) |
-| `requires_api` | minimum `API_VERSION` needed (the app provides `2`); newer requirements are refused. `1` still works |
+| `requires_api` | minimum `API_VERSION` needed (the app provides `3`); newer requirements are refused. `1` and `2` still work |
 | `category` | API 2. Menu placement of the extension's panels — see [Where your extension appears](#where-your-extension-appears). Default `"Other"` |
 | `supports_review` | API 2. `True` = also run in review windows (**File ▸ Open session**); default `False` (shown as *not applicable* there). See [Review windows](#9-review-windows-api-2) |
 | `supports(spec)` (classmethod) | return `False` when the connected device lacks what you need (e.g. `{"AF7","TP9"} <= set(spec.eeg.names)` or `spec.imu.n >= 6`); the extension then shows **not applicable** instead of failing. Default `True` |
@@ -105,6 +105,7 @@ Override only what you need. A hook you don't override is never called.
 | `on_eeg(x, ts)` | each EEG chunk. `x`: `(4, k)` µV, unfiltered; `ts`: Unix time of the last sample |
 | `on_optics(x, ts)` | each optics chunk, `(16, k)` raw intensities |
 | `on_imu(x, ts)` | each IMU chunk, `(6, k)`: acc x/y/z (g) + gyro x/y/z (°/s) |
+| `on_eeg_samples(x, ts_raw)`, `on_optics_samples(x, ts_raw)`, `on_imu_samples(x, ts_raw)` | API 3, live window only: the same chunk, called right after the hook above, with `ts_raw` = float64 `(k,)` Unix timestamp of **every** sample, exactly as written to the CSV. See [Per-sample timestamps](#10-per-sample-timestamps-api-3) |
 | `on_event(t, label)` | an event was marked (Space key or `app.mark_event`) |
 | `on_recording_started(path)` / `on_recording_stopped()` | recording toggled; `path` is the EEG `.csv` |
 | `on_connected(name)` / `on_disconnected()` | stream started / stopped |
@@ -229,3 +230,26 @@ Limits in a review window (nothing is written next to the recording):
 Bundled extensions with review support: `hello_world`, `band_power`, `artifact_log`. The others
 (`eye_interaction`, `head_motion`, `head_motion_plus`) show real-time state (avatar, head pose,
 camera) and stay live-only.
+
+## 10. Per-sample timestamps (API 3)
+
+`on_eeg(x, ts)` gives only the timestamp of the chunk's last sample. When you need the time of every
+sample (streaming to another program, precise alignment), override the API 3 hook instead or as well:
+
+```python
+class MyExt(Extension):
+    requires_api = 3
+
+    def on_eeg_samples(self, x, ts_raw):
+        # x: (n_ch, k) µV, unfiltered; ts_raw: np.float64 array of length k
+        ...
+```
+
+- `ts_raw` is the vector the worker delivered and the CSV records, unmodified. It is the **host
+  receive time**, not a device clock: with Muse S Athena (BrainFlow over BLE) samples of one packet
+  often share a value, values can jump by tens of milliseconds between packets, and IMU values can
+  step back slightly. Smooth it yourself if your use needs a regular time axis.
+- A worker that sends only the last timestamp gets it expanded at the nominal sampling rate.
+- Called after the API 1 hook of the same chunk; if no extension overrides it, the app does no extra
+  work. An error in it disables only that extension, like any hook.
+- Live window only: review windows replay recordings through the API 1 hooks and never call these.

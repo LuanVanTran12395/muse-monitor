@@ -74,7 +74,7 @@ def finish(w):
 
 # ---- API 2 ------------------------------------------------------------------------------------------
 def test_api_version_and_compatibility(qapp, spec, settings, ext_dir, monkeypatch):
-    assert API_VERSION == 2 and Extension.supports_review is False
+    assert API_VERSION >= 2 and Extension.supports_review is False
     monkeypatch.setattr(mw.MainWindow, "start_scan", lambda self: None)
     live = mw.MainWindow(spec, settings=settings, extension_dirs=[str(ext_dir)])
     st = {r.id: r.status for r in live.extensions.records}

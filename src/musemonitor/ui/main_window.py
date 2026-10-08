@@ -2,11 +2,14 @@
 import time
 from pathlib import Path
 
+import numpy as np
+
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from .. import config as C
 from ..core.quality import contact_quality
 from ..core.store import SignalStore
+from ..core.timing import ts_vector
 from ..device.scanner import BleScanner
 from ..device.profiles import athena_profile, profile_for_name
 from ..plugins.manager import ExtensionManager
@@ -349,19 +352,28 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_data(self, eeg, ts, seq=None):
         st = self.ctx.store
         st.add_eeg(eeg, ts, seq); self.extensions.dispatch("on_eeg", eeg, st.last_ts["eeg"])
+        self._dispatch_samples("on_eeg_samples", eeg, ts, self.spec.eeg.fs)
         if self.session: self.session.add("eeg", eeg)
 
     @QtCore.Slot(object, object, object)
     def on_optics(self, optics, ts, seq=None):
         st = self.ctx.store
         st.add_optics(optics, ts, seq); self.extensions.dispatch("on_optics", optics, st.last_ts["opt"])
+        self._dispatch_samples("on_optics_samples", optics, ts, self.spec.optics.fs)
         if self.session: self.session.add("opt", optics)
 
     @QtCore.Slot(object, object, object)
     def on_imu(self, imu, ts, seq=None):
         st = self.ctx.store
         st.add_imu(imu, ts, seq); self.extensions.dispatch("on_imu", imu, st.last_ts["imu"])
+        self._dispatch_samples("on_imu_samples", imu, ts, self.spec.imu.fs)
         if self.session: self.session.add("imu", imu)
+
+    def _dispatch_samples(self, hook, x, ts, fs):
+        """API 3: the chunk with the per-sample timestamps the worker delivered (and the CSV records).
+        A worker that sends only the last timestamp gets it expanded at the nominal rate."""
+        if not self.extensions.wants(hook): return
+        self.extensions.dispatch(hook, x, np.array(ts_vector(ts, x.shape[1], fs), dtype=np.float64))
 
     @QtCore.Slot(float)
     def on_battery(self, pct):

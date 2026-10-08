@@ -20,6 +20,11 @@ API 2 adds review windows (File ▸ Open session). An extension runs there only 
 ``supports_review = True``; the recording is then replayed through the data hooks in 0.1 s chunks,
 ``app.is_review`` is True and ``on_view_changed(t_end)`` follows the scrollbar. Extensions written
 for API 1 keep working unchanged in the live window.
+
+API 3 adds per-sample timestamps for live data: ``on_eeg_samples(x, ts_raw)``,
+``on_optics_samples`` and ``on_imu_samples`` receive the same timestamp vector the CSV gets.
+They are live-only (never called in review windows) and sit next to the API 1 hooks, which are
+unchanged.
 See docs/EXTENSIONS.md for details.
 """
 from pathlib import Path
@@ -28,7 +33,7 @@ from PySide6 import QtGui, QtWidgets
 
 from ..ui.tabs.base import BaseTab
 
-API_VERSION = 2
+API_VERSION = 3
 
 __all__ = ["API_VERSION", "CATEGORIES", "Extension", "ExtensionContext", "BaseTab"]
 
@@ -91,6 +96,18 @@ class Extension:
 
     def on_imu(self, x, ts):
         """x: (6, k) = acc_x,y,z (g) + gyro_x,y,z (°/s)."""
+
+    # ---- realtime data with per-sample timestamps (API 3, live window only) -------
+    def on_eeg_samples(self, x, ts_raw):
+        """Same chunk as on_eeg, called right after it. ts_raw: float64 (k,), the unix timestamp of every
+        sample exactly as written to the CSV (for Athena: BrainFlow's host-receive time — samples of one
+        BLE packet can share a value, and IMU values can step back). Not called in review windows."""
+
+    def on_optics_samples(self, x, ts_raw):
+        """Same as on_eeg_samples for the optics chunk."""
+
+    def on_imu_samples(self, x, ts_raw):
+        """Same as on_eeg_samples for the IMU chunk."""
 
     # ---- app events --------------------------------------------------------
     def on_event(self, t, label):

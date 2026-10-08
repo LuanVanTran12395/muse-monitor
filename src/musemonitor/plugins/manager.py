@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from .api import API_VERSION, Extension, ExtensionContext, menu_location
 from .loader import discover
 
-HOOKS = ("on_eeg", "on_optics", "on_imu", "on_event", "on_recording_started", "on_recording_stopped",
+HOOKS = ("on_eeg", "on_optics", "on_imu", "on_eeg_samples", "on_optics_samples", "on_imu_samples", "on_event", "on_recording_started", "on_recording_stopped",
          "on_connected", "on_disconnected", "on_theme_changed", "on_view_changed")
 DISABLED_KEY = "extensions/disabled"
 
@@ -164,6 +164,10 @@ class ExtensionManager:
         return [r for r in self.records if r.status == "active"]
 
     # ---- hook dispatch --------------------------------------------------------------
+    def wants(self, hook):
+        """Whether any active extension overrides ``hook`` (lets the app skip preparing its arguments)."""
+        return bool(self._subs[hook])
+
     def dispatch(self, hook, *args):
         for rec in list(self._subs[hook]):
             try:
