@@ -10,9 +10,11 @@ follows the scrollbar. Their side effects are contained: mark_event only draws a
 set_setting stays in memory, nothing is recorded.
 """
 import time
+import weakref
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
+from shiboken6 import isValid
 
 from .. import config as C
 from ..core.quality import contact_quality
@@ -70,6 +72,7 @@ def open_review(path, settings, profiles, parent=None, choose_profile=None, show
     try:
         sess = load(info, profile=profile, progress=progress)
         w = ReviewWindow(sess, settings, profile=profile, extension_dirs=extension_dirs)
+        w.live = _live_of(parent)
     except ReadCancelled:
         return None
     except (ReaderError, ValueError) as e:
@@ -78,6 +81,13 @@ def open_review(path, settings, profiles, parent=None, choose_profile=None, show
         dlg.reset(); dlg.deleteLater()
     if show: w.show()
     return w
+
+
+def _live_of(parent):
+    """Weak reference to the live window a review window belongs to (opened from it, or from one of its reviews)."""
+    if parent is None: return None
+    if getattr(parent, "is_review", False): return getattr(parent, "live", None)
+    return weakref.ref(parent)
 
 
 def _ask_profile(parent, info, options):
@@ -106,6 +116,7 @@ class ReviewWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.session = session
         self.extension_store = None     # the replay cursor while extensions are being fed, else None
+        self.live = None                # weakref to the live window that opened it (set by open_review)
         spec = session.spec or generic_spec(session.names, session.rates)
         self.store = ReviewStore(spec, session.streams, session.events)
         self.ctx = ViewContext(spec=spec, store=self.store, settings=settings,
@@ -296,9 +307,9 @@ class ReviewWindow(QtWidgets.QMainWindow):
 
     def new_session(self):
         """From a review window: close it and bring the live window to the front."""
-        live = next((w for w in QtWidgets.QApplication.topLevelWidgets()
-                     if w.isVisible() and type(w).__name__ == "MainWindow"), None)
-        if live is not None: live.raise_(); live.activateWindow()
+        live = self.live() if self.live is not None else None          # no scan of all top-level widgets:
+        if live is not None and isValid(live) and live.isVisible():     # some may be deleted C++ objects
+            live.raise_(); live.activateWindow()
         self.close()
 
     def open_another(self):
