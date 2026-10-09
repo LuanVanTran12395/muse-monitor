@@ -249,7 +249,7 @@ synthetic device library that exercises the device-profile mechanism.
 **Golden test on real Athena data** (locks the original CSV columns and analysis results):
 
 ```bash
-PYTHONPATH=src python tools/capture_athena.py MuseS-EDAA --seconds 30          # raw BrainFlow fixture
+PYTHONPATH=src python tools/capture_athena.py MuseS-EDAA --seconds 30 --out tests/fixtures/athena_raw_<time>.npz   # raw BrainFlow fixture (committed)
 git worktree add /tmp/mm-base <known-good commit>
 PYTHONPATH=/tmp/mm-base/src python tests/golden.py bless tests/fixtures/athena_raw_<time>.npz
 python -m pytest tests/test_golden_athena.py

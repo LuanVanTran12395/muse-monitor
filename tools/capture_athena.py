@@ -4,9 +4,13 @@ Unlike the app's CSV (timestamps + signal channels only), this file keeps EVERY 
 of all three presets (including package_num, marker, battery…) and the boundaries of each read (chunk), so it can be
 replayed exactly as the worker received it.
 
-Usage (close Muse Monitor first — BLE allows only one connection):
+Usage (close Muse Monitor first — BLE allows only one connection). ``--out`` is required, so where a
+personal recording lands is always a deliberate choice:
 
-    PYTHONPATH=src ~/.venvs/musemonitor/bin/python tools/capture_athena.py MuseS-EDAA --seconds 30
+    # private, git-ignored (e.g. for measuring timing):
+    PYTHONPATH=src ~/.venvs/musemonitor/bin/python tools/capture_athena.py MuseS-EDAA --seconds 600 --out data/athena_raw_10min.npz
+    # a fixture for the golden test — WILL be committed if you add it:
+    PYTHONPATH=src ~/.venvs/musemonitor/bin/python tools/capture_athena.py MuseS-EDAA --seconds 30 --out tests/fixtures/athena_raw_<time>.npz
 
 While recording: sit still and follow the on-screen cues (tap / blink) — these landmarks help
 check cross-stream latency later. Ctrl+C stops early (what was recorded is still saved).
@@ -31,13 +35,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("serial", help="BLE device name, e.g. MuseS-EDAA")
     ap.add_argument("--seconds", type=float, default=30)
-    ap.add_argument("--out", default=None, help="default: tests/fixtures/athena_raw_<time>.npz")
+    ap.add_argument("--out", required=True,
+                    help="output .npz — data/… stays private (git-ignored); tests/fixtures/… is meant to be committed")
     a = ap.parse_args(argv)
 
     spec = athena_spec()
     presets = {"eeg": spec.eeg.preset, "optics": spec.optics.preset, "imu": spec.imu.preset}
-    out = Path(a.out) if a.out else (Path(__file__).resolve().parents[1] / "tests" / "fixtures"
-                                     / f"athena_raw_{time.strftime('%Y%m%d_%H%M%S')}.npz")
+    out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     chunks = {k: [] for k in presets}          # [(array with all rows, time.time() at read)]
