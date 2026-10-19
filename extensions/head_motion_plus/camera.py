@@ -63,8 +63,12 @@ def facing_from_face(row, frame_width):
     out["roll_deg"] = math.degrees(math.atan2(eye_l[1] - eye_r[1], eye_l[0] - eye_r[0]))
     if score < MIN_SCORE: out["reason"] = "face unclear"
     elif w / frame_width < MIN_FACE_FRAC: out["reason"] = "too far from camera"
-    elif abs(out["yaw_ratio"]) > MAX_YAW_RATIO: out["reason"] = "turned left/right"
-    elif not PITCH_RANGE[0] <= out["pitch_ratio"] <= PITCH_RANGE[1]: out["reason"] = "looking up/down"
+    # directions are the person's own: the image is not mirrored, so the nose right of the eye midpoint
+    # (yaw_ratio > 0) means they turned to THEIR left; a nose closer to the eye line means looking up (H10)
+    elif abs(out["yaw_ratio"]) > MAX_YAW_RATIO:
+        out["reason"] = "turned left" if out["yaw_ratio"] > 0 else "turned right"
+    elif not PITCH_RANGE[0] <= out["pitch_ratio"] <= PITCH_RANGE[1]:
+        out["reason"] = "looking up" if out["pitch_ratio"] < PITCH_RANGE[0] else "looking down"
     elif abs(out["roll_deg"]) > MAX_ROLL_DEG: out["reason"] = "head tilted"
     else: out["facing"], out["reason"] = True, "facing the screen"
     return out

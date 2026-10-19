@@ -270,9 +270,11 @@ def live(qapp, spec, settings, monkeypatch, tmp_path):
 
 def test_file_menu_has_new_open_close(live):
     titles = [a.text() for a in live.menuBar().actions()]
-    assert titles == ["File", "Analysis", "HCI/BCI", "Extensions"]
+    assert titles == ["File", "View", "Analysis", "HCI/BCI", "Extensions"]
     file_menu = live.menuBar().actions()[0].menu()
-    assert [a.text() for a in file_menu.actions() if a.text()] == ["New session", "Open session…", "Close window"]
+    assert [a.text() for a in file_menu.actions() if a.text()] == [
+        "New session", "Open session…", "Open recent", "Start recording", "Fit-test",
+        "Open last recording folder", "Open last report", "Close window"]
 
 
 def test_open_session_review_window(live, spec, tmp_path, qapp):

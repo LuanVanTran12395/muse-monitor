@@ -21,6 +21,25 @@ THEMES = {
 DEFAULT_THEME = "Dark"
 
 
+def _luminance(color):
+    """WCAG relative luminance of a '#rrggbb' colour."""
+    def lin(c):
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (int(color.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
+def contrast_ratio(a, b):
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def text_on(bg, light="#ffffff", dark="#111111"):
+    """Text colour (white or near-black) that contrasts best with the fill ``bg``."""
+    return light if contrast_ratio(bg, light) >= contrast_ratio(bg, dark) else dark
+
+
 def qt_palette(th):
     p = QtGui.QPalette()
     C = QtGui.QColor

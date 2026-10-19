@@ -9,3 +9,6 @@ dist/
 # user recordings — kept out of the repo
 data/*
 !data/.gitkeep
+
+# design notes — kept local
+debate/

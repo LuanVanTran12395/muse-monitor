@@ -4,7 +4,7 @@ import traceback
 from dataclasses import dataclass
 
 from .api import API_VERSION, Extension, ExtensionContext, menu_location
-from .loader import discover
+from .loader import discover, is_file_source, reimport, source_mtime
 
 HOOKS = ("on_eeg", "on_optics", "on_imu", "on_eeg_samples", "on_optics_samples", "on_imu_samples", "on_event", "on_recording_started", "on_recording_stopped",
          "on_connected", "on_disconnected", "on_theme_changed", "on_view_changed")
@@ -19,6 +19,7 @@ class ExtensionRecord:
     instance: Extension = None
     status: str = "loaded"      # active | disabled | unloaded | error | incompatible | not applicable
     error: str = None
+    mtime: int = 0              # newest .py mtime (ns) when imported — "Reload changed" compares against it
 
     @property
     def name(self):
@@ -107,7 +108,8 @@ class ExtensionManager:
         return f"{len(changed)} new extension(s) — " + "; ".join(parts)
 
     def _register(self, d, disabled):
-        rec = ExtensionRecord(d.id, d.source, d.cls, error=d.error)
+        rec = ExtensionRecord(d.id, d.source, d.cls, error=d.error,
+                              mtime=source_mtime(d.source) if is_file_source(d.source) else 0)
         self.records.append(rec)
         if d.error:
             rec.status = "error"; return rec
@@ -219,6 +221,63 @@ class ExtensionManager:
         self._activate(rec)
         if rec.status == "active": self._catch_up(rec)
         return rec.status
+
+    # ---- reload (edit an extension's file, then reload it without restarting the app) ----------------
+    def host_reload_refusal(self):
+        """Why no extension can be reloaded right now (recording, review window), or None."""
+        if getattr(self.host, "is_review", False):
+            return "reload extensions from the live window, then open the recording again"
+        if getattr(self.host, "recording", False):
+            return "stop recording first — a reload would cut the extension's files in the middle of the recording"
+        return None
+
+    def reload_refusal(self, rec):
+        """Why ``rec`` cannot be reloaded now, or None if it can."""
+        if rec is None: return "unknown extension"
+        if not is_file_source(rec.source):
+            return f"{rec.name} is installed as a package — restart the app to run its new code"
+        return self.host_reload_refusal()
+
+    def reload(self, ext_id):
+        """Import a folder / file extension again and start it with the new code (unless it is disabled in Manage).
+        Only while not recording, and not for pip packages (see reload_refusal). The old instance is stopped first
+        (hooks off, deactivate(), its tabs, menu items and status message removed); the new one catches up with
+        the app state (theme, connected device) and gets its panels back as they were ticked.
+        Returns (record, message); record is None when the reload was refused."""
+        rec = next((r for r in self.records if r.id == ext_id), None)
+        reason = self.reload_refusal(rec)
+        if reason: return None, reason
+        if rec.status == "active":
+            self.unload(rec.id)
+        elif rec.instance is not None:                   # crashed earlier: its tabs / menu items are still there
+            try: rec.instance.app._dispose()
+            except BaseException: pass
+            rec.instance = None
+        index = self.records.index(rec)
+        self.records.remove(rec)
+        new = self._register(reimport(rec.source), self.disabled_ids())
+        self.records.remove(new); self.records.insert(index, new)      # keep its row in the Manage list
+        if new.status == "active": self._catch_up(new)
+        elif new.status == "error": self._log(new)
+        word = {"active": "reloaded", "error": "failed to reload — see Extensions ▸ Manage"}.get(new.status, new.status)
+        return new, f"{new.name}: {word}"
+
+    def changed(self):
+        """File extensions whose .py files changed on disk since they were imported."""
+        return [r for r in self.records if is_file_source(r.source) and r.mtime and source_mtime(r.source) != r.mtime]
+
+    def reload_changed(self):
+        """Reload every changed file extension; returns (records reloaded, message)."""
+        todo = self.changed()
+        if not todo: return [], "No extension changed on disk since it was loaded."
+        reason = self.host_reload_refusal()
+        if reason: return [], reason
+        done, msgs = [], []
+        for rec in todo:
+            new, msg = self.reload(rec.id)
+            msgs.append(msg)
+            if new is not None: done.append(new)
+        return done, "; ".join(msgs)
 
     def shutdown(self):
         for rec in self.active():

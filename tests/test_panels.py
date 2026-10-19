@@ -47,23 +47,23 @@ def tab_visible(w, title):
 
 def test_menu_bar_and_groups(make):
     w = make()
-    assert [a.text() for a in w.menuBar().actions()] == ["File", "Analysis", "HCI/BCI", "Extensions"]
+    assert [a.text() for a in w.menuBar().actions()] == ["File", "View", "Analysis", "HCI/BCI", "Extensions"]
     an, hci = tree(menu(w, "Analysis")), tree(menu(w, "HCI/BCI"))
     assert an["EEG"] == ["Band power"] and an["Data quality"] == ["Artifacts"]
     assert an[""] == ["Show all panels", "Hide all panels"]
-    assert hci["Eyes"] == ["Eyes · EEG/alpha"] and hci["Motion"] == ["3D head", "3D head +"]
+    assert hci["Eyes"] == ["Eyes (experimental)"] and hci["Motion"] == ["3D head", "3D head +"]
     assert "Heart & optics" not in an                                 # empty groups are not shown
     ext = tree(menu(w, "Extensions"))
     assert ext["Band Power"] == ["Clear history"] and ext["Artifact Log"] == ["Clear list"]
     assert ext["Hello World"] == ["Say hi"]
-    assert ext[""] == ["Check for new extensions", "Manage extensions…"]
+    assert ext[""] == ["Check for new extensions", "Reload changed extensions", "Manage extensions…"]
 
 
 def test_panels_start_hidden_and_follow_the_menu(make, settings):
     w = make()
     rp = w.rec_page
     assert [tab_visible(w, t) for t in ("Signals", "EEG PSD", "PPG · HRV · fNIRS")] == [True] * 3
-    for t in ("Band power", "Artifacts", "Eyes · EEG/alpha", "3D head", "3D head +"):
+    for t in ("Band power", "Artifacts", "Eyes (experimental)", "3D head", "3D head +"):
         assert not tab_visible(w, t)
     p = w.panels.find("Artifacts")
     p.action.trigger()                                                # tick
@@ -81,10 +81,10 @@ def test_show_all_and_hide_all_per_menu(make):
     w = make()
     hci = menu(w, "HCI/BCI")
     next(a for a in hci.actions() if a.text() == "Show all panels").trigger()
-    assert all(tab_visible(w, t) for t in ("Eyes · EEG/alpha", "3D head", "3D head +"))
+    assert all(tab_visible(w, t) for t in ("Eyes (experimental)", "3D head", "3D head +"))
     assert not tab_visible(w, "Band power")                           # other menu untouched
     next(a for a in hci.actions() if a.text() == "Hide all panels").trigger()
-    assert not any(tab_visible(w, t) for t in ("Eyes · EEG/alpha", "3D head", "3D head +"))
+    assert not any(tab_visible(w, t) for t in ("Eyes (experimental)", "3D head", "3D head +"))
 
 
 def test_new_panels_announced_once(make):

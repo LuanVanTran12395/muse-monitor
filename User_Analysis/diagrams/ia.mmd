@@ -1,0 +1,102 @@
+---
+title: Muse Monitor — Information Architecture
+---
+flowchart LR
+    APP(["<b>Muse Monitor</b>"])
+
+    APP --> LIVE["<b>Cửa sổ Live</b><br/>1 cửa sổ / device profile"]
+    APP --> REV["<b>Cửa sổ Review</b><br/>0…n, mỗi phiên một cửa sổ"]
+    APP --> DATA[("<b>Dữ liệu đã ghi</b><br/>data/muse_‹time›/")]
+    APP --> EXTS[("<b>Nguồn extension</b>")]
+    APP --> SET[("<b>QSettings</b>")]
+
+    %% ---------- Live: menu bar ----------
+    LIVE --> MB["Menu bar"]
+    MB --> MF["File"]
+    MF --> MF1["New session ⌘N"]
+    MF --> MF2["Open session… ⌘O"]
+    MF --> MF3["Close window ⌘W"]
+    MB --> MA["Analysis"]
+    MA --> MA1["EEG ▸ Band power"]
+    MA --> MA2["Heart & optics ▸ …"]
+    MA --> MA3["Data quality ▸ Artifacts"]
+    MA --> MA4["Other ▸ …"]
+    MA --> MA5["Show all / Hide all panels"]
+    MB --> MH["HCI/BCI"]
+    MH --> MH1["Eyes ▸ Eyes (experimental)"]
+    MH --> MH2["Motion ▸ 3D head · 3D head +"]
+    MH --> MH3["Show all / Hide all panels"]
+    MB --> ME["Extensions"]
+    ME --> ME1["‹Extension› ▸ action<br/>LSL Outlet ▸ Start LSL streams · LSL status…"]
+    ME --> ME2["Check for new extensions"]
+    ME --> ME3["Manage extensions…"]
+
+    %% ---------- Live: pages ----------
+    LIVE --> PG["Trang (stack)"]
+    PG --> PC["<b>1 · Connect</b>"]
+    PC --> PC1["Hướng dẫn · thiết bị hỗ trợ"]
+    PC --> PC2["⟳ Rescan · trạng thái quét"]
+    PC --> PC3["Danh sách thiết bị<br/>tên · RSSI · last used"]
+    PC --> PC4["Or enter name"]
+    PC --> PC5["Status · Connect → / Cancel"]
+    PG --> PF["<b>2 · Fit-test</b>"]
+    PF --> PF1["Tên thiết bị · 🔋 pin"]
+    PF --> PF2["Sơ đồ đầu 4 điện cực"]
+    PF --> PF3["Trace 4 kênh + chất lượng"]
+    PF --> PF4["Disconnect · n/4 Good · Accept →"]
+    PG --> PR["<b>3 · Recording</b>"]
+    PR --> PR1["Thanh điều khiển<br/>● Start / ■ Stop · mm:ss · ◀ Fit-test<br/>Filter · Notch · Fixed · Time range<br/>🔋 · status · Disconnect"]
+    PR --> PR2["Thanh thống kê<br/>rate · Received · Events · Timing · Latest µV"]
+    PR --> PT1["Tab: Signals (EEG · Optics · IMU)<br/>EEG PSD · PPG · HRV · fNIRS<br/>+ panel extension đang hiện"]
+    PR --> PR4["Ghi chú research prototype"]
+
+    %% ---------- Live: status bar + dialogs ----------
+    LIVE --> SB["Status bar"]
+    SB --> SB1["Thông báo hệ thống & extension"]
+    SB --> SB2["Theme: Dark / Light"]
+    LIVE --> DG["Hộp thoại"]
+    DG --> DG1["Mark event<br/>Space · nhãn điền sẵn"]
+    DG --> DG2["Recording in progress<br/>Keep recording / Stop recording"]
+    DG --> DG3["Extensions manager<br/>bảng Enabled · Version · Status · Menu<br/>Update · Load/Unload · Open folder"]
+    DG --> DG5["New extension<br/>tên · category → vị trí menu"]
+    DG --> DG4["Open recording · chọn thiết bị · Loading"]
+
+    %% ---------- Review ----------
+    REV --> RM["Menu bar<br/>File · Analysis · HCI/BCI · Extensions"]
+    REV --> RP["Recording page (review)<br/>ẩn Record · Disconnect · Fit-test"]
+    RP --> RP1["Tab Signals · EEG PSD · PPG"]
+    RP --> RP2["Panel extension supports_review"]
+    REV --> RN["Điều hướng thời gian"]
+    RN --> RN1["Thanh cuộn ngang · Time range"]
+    RN --> RN2["Vị trí h:mm:ss.s"]
+    RN --> RN3["Danh sách event → nhảy tới"]
+
+    %% ---------- Data ----------
+    DATA --> D1["muse_eeg_‹time›.csv<br/>_optics.csv · _imu.csv"]
+    DATA --> D2["…_events.csv<br/>0 · Space · 1–9 · extension"]
+    DATA --> D3["session.json<br/>profile · tần số · kênh"]
+    DATA --> D4["report.html<br/>psd_eeg/optics/imu.csv"]
+    DATA --> D5["File của extension"]
+
+    EXTS --> X1["extensions/ trong repo"]
+    EXTS --> X2["~/.musemonitor/extensions"]
+    EXTS --> X3["$MUSEMONITOR_EXTENSIONS · pip"]
+
+    SET --> S1["theme · thiết bị cuối · time range"]
+    SET --> S2["panel đang hiện · extension bị tắt"]
+
+    classDef root fill:#1f2937,stroke:#111827,color:#ffffff,font-size:18px
+    classDef window fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff
+    classDef group fill:#dbeafe,stroke:#1d4ed8,color:#0b1b3f
+    classDef page fill:#fde68a,stroke:#b45309,color:#3b2300
+    classDef dialog fill:#fce7f3,stroke:#be185d,color:#4a0425
+    classDef store fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef leaf fill:#ffffff,stroke:#94a3b8,color:#1f2937
+
+    class APP root
+    class LIVE,REV window
+    class MB,MF,MA,MH,ME,PG,SB,DG,RM,RP,RN group
+    class PC,PF,PR page
+    class DG1,DG2,DG3,DG4,DG5 dialog
+    class DATA,EXTS,SET store
+    class MF1,MF2,MF3,MA1,MA2,MA3,MA4,MA5,MH1,MH2,MH3,ME1,ME2,ME3,PC1,PC2,PC3,PC4,PC5,PF1,PF2,PF3,PF4,PR1,PR2,PR4,PT1,SB1,SB2,RP1,RP2,RN1,RN2,RN3,D1,D2,D3,D4,D5,X1,X2,X3,S1,S2 leaf

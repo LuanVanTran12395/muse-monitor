@@ -3,7 +3,8 @@
 Every tab/page creates plots through ``PlotRegistry`` → MainWindow need not know the details of each plot."""
 from dataclasses import dataclass
 
-from PySide6 import QtWidgets
+import pyqtgraph as pg
+from PySide6 import QtGui, QtWidgets
 
 
 @dataclass
@@ -91,7 +92,9 @@ class PlotRegistry:
         for p in self.plots:
             for ax in ("left", "bottom", "right", "top"):
                 a = p.getAxis(ax); a.setPen(th["fg"]); a.setTextPen(th["fg"])
+        bg = QtGui.QColor(th["bg"]); bg.setAlpha(210)
         for lg in self.legends:
             lg.setLabelTextColor(th["fg"])
+            lg.setBrush(pg.mkBrush(bg)); lg.setPen(pg.mkPen(th["border"]))     # readable over the traces behind it
             for _, lab in lg.items: lab.setText(lab.text)
         for lab in self.muted: lab.setStyleSheet(f"color: {th['muted']}")

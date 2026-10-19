@@ -8,8 +8,25 @@ import numpy as np
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from musemonitor.plugins.api import BaseTab, Extension
+from musemonitor.plugins.cues import Cues
 
 from . import camera
+
+STEPS = (("1 · Hold still", "neutral"), ("2 · Turn left", "left"), ("3 · Look up", "up"))
+STEP_KEYS = {getattr(QtCore.Qt, f"Key_{i}"): kind for i, (_, kind) in enumerate(STEPS, 1)}   # H2
+STEP_NO = {kind: i for i, (_, kind) in enumerate(STEPS, 1)}
+STEP_WHAT = {"neutral": "hold your head still",                                              # H4: plain words
+             "left": "turn your head LEFT once and hold it there until the end tones",
+             "up": "look UP once and hold until the end tones"}
+CAPTURE_SEC = {"neutral": 1.0, "left": 1.5, "up": 1.5}
+COUNTDOWN_S = 3                    # time to face forward and read the instruction
+AUTO_PAUSE_MS = 2000               # Calibrate 1–3: time to face forward again between steps
+FLASH_S = 2.0                      # "Recentered" label on the head after a recenter
+STATE_WORDS = {"✓ ": "done", "✕ ": "repeat this step", "● ": "capturing", "… ": "counting down", "": "not done"}
+MIRROR = np.diag((-1.0, 1.0, 1.0))  # reflect left/right: the model moves like your reflection (H7)
+INTRO = ("Optional calibration (click or press 1–3, or ▶ Calibrate 1–3): hold still, turn left once, then look "
+         "up once, facing forward between steps. Start at the GO beep and hold until the end tones. Then face "
+         "forward, hold still and press Recenter (R).")
 
 
 def _normal(v):
@@ -272,7 +289,24 @@ class HeadCanvas(QtWidgets.QWidget):
         self.tracker = tracker
         self.theme = None
         self.mesh = build_head_mesh()
+        self.mirror = True                 # H7: like a mirror by default (same as Eyes' Mirror view)
+        self.recentered = None             # (monotonic time, "manual" | "camera") of the last recenter (H5)
+        self.flash_until = 0.0
         self.setMinimumSize(360, 330)
+        self.setAccessibleName("3D head pose")
+
+    def mark_recentered(self, source, now=None):
+        now = time.monotonic() if now is None else now
+        self.recentered = (now, source)
+        self.flash_until = now + FLASH_S
+        self.update()
+
+    def recenter_text(self, now=None):
+        if self.recentered is None: return "not recentered yet"
+        now = time.monotonic() if now is None else now
+        ago = max(0.0, now - self.recentered[0])
+        when = "just now" if ago < 10 else f"{ago:.0f} s ago" if ago < 60 else f"{ago / 60:.0f} min ago"
+        return f"recentered {when} ({self.recentered[1]})"
 
     def set_theme(self, theme):
         self.theme = theme
@@ -298,6 +332,7 @@ class HeadCanvas(QtWidgets.QWidget):
 
         m = self.mesh
         rot = _rotation_matrix(self.tracker.q)
+        if self.mirror: rot = MIRROR @ rot @ MIRROR          # reflected motion, mesh itself not flipped
         world = m.verts @ rot.T
         persp = self.CAMERA / (self.CAMERA - world[:, 2])
         sx = center.x() + world[:, 0]*scale*persp
@@ -327,50 +362,83 @@ class HeadCanvas(QtWidgets.QWidget):
                          f"yaw {yaw:+d}°   pitch {pitch:+d}°   roll {roll:+d}°")
         painter.setPen(QtGui.QColor(th["muted"]))
         painter.drawText(QtCore.QRectF(0, self.height()-24, self.width(), 18), QtCore.Qt.AlignCenter,
-                         "relative pose · yaw may drift")
+                         f"relative pose · yaw may drift · {self.recenter_text()}")
+        if time.monotonic() < self.flash_until and self.recentered:          # the model may have jumped: say why
+            painter.setPen(QtGui.QColor(th["fg"]))
+            f = painter.font(); f.setBold(True); painter.setFont(f)
+            painter.drawText(QtCore.QRectF(0, 10, self.width(), 22), QtCore.Qt.AlignCenter,
+                             f"Recentered ({self.recentered[1]})")
         painter.end()
 
 
 class HeadMotionPlusTab(BaseTab):
     title = "3D head +"
+    # H2: keys 1–3 run the calibration steps while this tab has the focus (not quick events "1"–"3");
+    # R (not reserved by the app) recenters. Space still marks an event.
+    wants_keys = frozenset(STEP_KEYS)
 
     def __init__(self, ctx, ext):
         super().__init__(ctx)
         self.ext = ext
-        layout = QtWidgets.QVBoxLayout(self)
-        controls = QtWidgets.QHBoxLayout()
-        self.status = QtWidgets.QLabel("Waiting for Athena IMU…")
-        self.recenter_button = QtWidgets.QPushButton("Recenter head")
-        self.recenter_button.clicked.connect(self.recenter)
-        controls.addWidget(self.status)
-        controls.addStretch()
-        controls.addWidget(self.recenter_button)
-        layout.addLayout(controls)
-        self.canvas = HeadCanvas(ext.tracker)
-        layout.addWidget(self.canvas, 1)
-        calibration = QtWidgets.QHBoxLayout()
-        self.neutral_button = QtWidgets.QPushButton("1 · Hold still")
-        self.left_button = QtWidgets.QPushButton("2 · Turn left")
-        self.up_button = QtWidgets.QPushButton("3 · Look up")
-        for button, kind in ((self.neutral_button, "neutral"),
-                             (self.left_button, "left"), (self.up_button, "up")):
-            button.clicked.connect(lambda _=False, k=kind: self.begin_capture(k))
-            calibration.addWidget(button)
-        calibration.addStretch()
-        layout.addLayout(calibration)
-        self.calibration_info = ctx.plots.muted_label(
-            "Optional calibration: hold still, turn left once, then look up once. "
-            "Return to center between steps. Click a step, wait for GO, move once and hold.")
-        layout.addWidget(self.calibration_info)
-        self.note = ctx.plots.muted_label(
-            "Relative orientation only. Keep still before Recenter. Yaw has no compass reference.")
-        layout.addWidget(self.note)
-        self._build_camera_row(layout)
         self.capture_kind = None
         self.capture_rows = []
         self.neutral_bias = None
         self.left_vector = None
+        self.calibrated = False
         self.capture_generation = 0
+        self.pending = None                    # step in its GO countdown
+        self.countdown_left = 0
+        self.queue = []                        # Calibrate 1–3: steps still to run
+        self.failed = set()
+        self._tick = QtCore.QTimer(self); self._tick.setInterval(1000); self._tick.timeout.connect(self._countdown_tick)
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.status = QtWidgets.QLabel("<b>IMU:</b> waiting for Athena…")
+        layout.addWidget(self.status)
+        self.canvas = HeadCanvas(ext.tracker)
+        self.canvas.mirror = ext.mirror
+        layout.addWidget(self.canvas, 1)
+        row = QtWidgets.QHBoxLayout()
+        self.all_btn = QtWidgets.QPushButton("▶ Calibrate 1–3")
+        self.all_btn.setToolTip("Run steps 1, 2 and 3 one after the other; click again to cancel")
+        self.all_btn.clicked.connect(self.toggle_all)
+        row.addWidget(self.all_btn); row.addSpacing(10)
+        self.step_buttons = {}
+        for label, kind in STEPS:
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(lambda _=False, k=kind: self.begin_capture(k))
+            row.addWidget(button, 1)
+            self.step_buttons[kind] = button
+        self.neutral_button, self.left_button, self.up_button = (self.step_buttons[k] for k in ("neutral", "left", "up"))
+        row.addSpacing(10)
+        self.recenter_button = QtWidgets.QPushButton("Recenter (R)")      # H11: next to the steps it follows
+        self.recenter_button.setToolTip("Make the current head pose 'forward' (also resets yaw drift). Face forward "
+                                        "and hold still for about one second first. Shortcut: R while this tab is "
+                                        "active.")
+        self.recenter_button.setAccessibleName("Recenter head")
+        self.recenter_button.clicked.connect(self.recenter)
+        row.addWidget(self.recenter_button); row.addSpacing(10)
+        self.sound = QtWidgets.QCheckBox("Sound cues")
+        self.sound.setToolTip("Beep at GO and when each capture ends (two rising tones: done · one low tone: repeat) "
+                              "— you cannot watch the screen while your head is turned")
+        self.sound.setChecked(ext.cues.enabled); self.sound.toggled.connect(ext.set_sound)
+        self.mirror = QtWidgets.QCheckBox("Mirror view")
+        self.mirror.setToolTip("On: the model moves like your reflection — turn left and it turns to the screen's "
+                               "left. Off: it moves like a person facing you. The angles always describe YOUR head.")
+        self.mirror.setChecked(ext.mirror); self.mirror.toggled.connect(ext.set_mirror)
+        row.addWidget(self.sound); row.addWidget(self.mirror)
+        layout.addLayout(row)
+        self.progress = QtWidgets.QProgressBar(); self.progress.setRange(0, 1000); self.progress.hide()
+        self.progress.setAccessibleName("Calibration progress")
+        layout.addWidget(self.progress)
+        self.calibration_info = ctx.plots.muted_label(INTRO)
+        layout.addWidget(self.calibration_info)
+        self.note = ctx.plots.muted_label(                                  # H7: what the signs mean
+            "Angles describe your head: yaw + = turned left · pitch + = looking up · roll + = tilted to the left. "
+            "Relative orientation only — yaw has no compass reference and drifts; Recenter or the camera resets it.")
+        layout.addWidget(self.note)
+        self._build_camera_row(layout)
+        self.refresh_steps()
 
     # ---- camera reference: "facing the screen" (optional, off by default) --------------------
     def _build_camera_row(self, layout):
@@ -382,6 +450,7 @@ class HeadMotionPlusTab(BaseTab):
                                   "Frames are analysed in memory only — never saved or sent.")
         self.cam_auto = QtWidgets.QCheckBox("Auto-recenter when I face the screen and hold still (corrects yaw drift)")
         self.cam_auto.setChecked(True); self.cam_auto.setEnabled(False)
+        self.cam_auto.hide()                                     # H9: only meaningful while the camera runs
         self.cam_status = QtWidgets.QLabel("Camera off.")
         pick = QtWidgets.QHBoxLayout()
         self.cam_select = QtWidgets.QComboBox()
@@ -390,8 +459,9 @@ class HeadMotionPlusTab(BaseTab):
         pick.addWidget(QtWidgets.QLabel("Camera:")); pick.addWidget(self.cam_select, 1)
         col.addWidget(self.cam_check); col.addLayout(pick); col.addWidget(self.cam_auto); col.addWidget(self.cam_status)
         row.addLayout(col, 1)
-        self.cam_live = QtWidgets.QLabel("● Camera on"); self.cam_live.setStyleSheet("color:#f85149;font-weight:600")
+        self.cam_live = QtWidgets.QLabel("● Camera on")          # colour from the theme (apply_theme, H8)
         self.cam_preview = QtWidgets.QLabel(); self.cam_preview.setFixedSize(160, 120)
+        self.cam_preview.setAccessibleName("Camera preview (mirrored)")
         self.cam_preview.setAlignment(QtCore.Qt.AlignCenter)
         pv = QtWidgets.QVBoxLayout(); pv.addWidget(self.cam_live); pv.addWidget(self.cam_preview)
         row.addLayout(pv)
@@ -494,13 +564,13 @@ class HeadMotionPlusTab(BaseTab):
         self.cam.stop()
         self._set_cam_check(False)
         self.cam_preview.clear(); self.cam_preview.hide(); self.cam_live.hide()
-        self.cam_auto.setEnabled(False)
+        self.cam_auto.setEnabled(False); self.cam_auto.hide()
         self.cam_last = None
         if message: self.cam_status.setText(message)
 
     def _camera_running(self, running):
         self.cam_live.setVisible(running); self.cam_preview.setVisible(running)
-        self.cam_auto.setEnabled(running)
+        self.cam_auto.setEnabled(running); self.cam_auto.setVisible(running)
         if running: self.cam_status.setText(f"Camera on ({self.cam.device_name}) — look straight at the screen.")
 
     def _camera_error(self, message):
@@ -514,10 +584,11 @@ class HeadMotionPlusTab(BaseTab):
     def _camera_result(self, res):
         self.cam_last = res
         still = self.ext.tracker.is_still()
-        if self.cam_gate.update(res.get("facing", False), still, time.monotonic()) and self.cam_auto.isChecked():
+        now = time.monotonic()
+        if self.cam_gate.update(res.get("facing", False), still, now) and self.cam_auto.isChecked():
             if self.ext.tracker.recenter():
                 self.calibration_info.setText("Auto-recentered: you are facing the screen.")
-                self.canvas.update()
+                self.canvas.mark_recentered("camera", now)
 
     def _camera_text(self):
         res = self.cam_last
@@ -526,30 +597,82 @@ class HeadMotionPlusTab(BaseTab):
         mark = "✓" if res["facing"] else "·"
         return f"Camera {mark} {res['reason']}"
 
-    def begin_capture(self, kind):
-        if not self.ext.tracker.samples:
-            self.calibration_info.setText("Connect Athena and wait for IMU samples first.")
-            return
-        if kind != "neutral" and self.neutral_bias is None:
-            self.calibration_info.setText("Complete step 1 while holding still first.")
-            return
-        if kind == "up" and self.left_vector is None:
-            self.calibration_info.setText("Complete step 2, the left turn, first.")
-            return
+    # ---- calibration steps (H1–H4) -------------------------------------------------------------------
+    def step_blocker(self, kind):
+        """Why step ``kind`` cannot start yet, or None."""
+        if not self.ext.tracker.samples: return "Connect Athena and wait for IMU samples first."
+        if kind != "neutral" and self.neutral_bias is None: return "Complete step 1 (hold still) first."
+        if kind == "up" and self.left_vector is None: return "Complete step 2 (turn left) first."
+        return None
+
+    def step_done(self, kind):
+        return {"neutral": self.neutral_bias is not None, "left": self.left_vector is not None,
+                "up": self.calibrated}[kind]
+
+    def busy(self):
+        return bool(self.pending or self.capture_kind or self.queue)
+
+    def keyPressEvent(self, ev):
+        if ev.isAutoRepeat(): return super().keyPressEvent(ev)
+        kind = STEP_KEYS.get(ev.key())
+        if kind is not None: self.begin_capture(kind); return
+        if ev.key() == QtCore.Qt.Key_R and not (ev.modifiers() & ~QtCore.Qt.KeypadModifier):
+            self.recenter(); return
+        super().keyPressEvent(ev)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self.setFocus()                        # opening the tab makes keys 1–3 and R reach it at once
+
+    @staticmethod
+    def schedule(ms, fn):
+        QtCore.QTimer.singleShot(ms, fn)
+
+    def begin_capture(self, kind, from_queue=False):
+        blocker = self.step_blocker(kind)
+        if blocker:
+            self.queue = []; self.calibration_info.setText(blocker); self.refresh_steps(); return
+        if not from_queue: self.queue = []                  # a manual step ends "Calibrate 1–3"
         self.capture_generation += 1
-        generation = self.capture_generation
         self.capture_kind = None
         self.capture_rows = []
-        instruction = {"neutral": "keep still", "left": "turn your head LEFT once",
-                       "up": "look UP once"}[kind]
-        self.calibration_info.setText(f"Get ready: {instruction}. GO in 1 second…")
-        QtCore.QTimer.singleShot(1000, lambda: self._start_capture(kind, generation))
+        self.failed.discard(kind)
+        self.pending, self.countdown_left = kind, COUNTDOWN_S
+        self._show_countdown()
+        self._tick.start()
+        self.refresh_steps()
+
+    def _show_countdown(self):
+        self.calibration_info.setText(f"Step {STEP_NO[self.pending]} — face forward and get ready: "
+                                      f"{STEP_WHAT[self.pending]}. GO in {self.countdown_left}…")
+
+    def _countdown_tick(self):
+        if self.pending is None: self._tick.stop(); return
+        self.countdown_left -= 1
+        if self.countdown_left > 0: self._show_countdown(); return
+        self._tick.stop()
+        kind, self.pending = self.pending, None
+        self._start_capture(kind, self.capture_generation)
 
     def _start_capture(self, kind, generation):
         if generation != self.capture_generation:
             return
+        self.pending = None
         self.capture_kind = kind
-        self.calibration_info.setText(f"GO: {kind} · capture in progress…")
+        self.capture_rows = []
+        self.calibration_info.setText(f"GO — step {STEP_NO[kind]}: {STEP_WHAT[kind]}.")
+        self.ext.cues.play("go")
+        self.refresh_steps()
+
+    def capture_needed(self, kind):
+        return int(self.ext.tracker.fs * CAPTURE_SEC[kind])
+
+    def capture_progress(self):
+        """(fraction 0–1, seconds left) of the running capture, or None."""
+        if self.capture_kind is None: return None
+        needed = self.capture_needed(self.capture_kind)
+        n = len(self.capture_rows)
+        return min(1.0, n / needed), max(0.0, (needed - n) / self.ext.tracker.fs)
 
     def collect(self, block):
         if self.capture_kind is None:
@@ -558,84 +681,166 @@ class HeadMotionPlusTab(BaseTab):
         if x.ndim != 2 or x.shape[0] < 6:
             return
         self.capture_rows.extend(x[:6].T)
-        needed = int(self.ext.tracker.fs * (1.5 if self.capture_kind != "neutral" else 1.0))
+        needed = self.capture_needed(self.capture_kind)
         if len(self.capture_rows) >= needed:
             kind = self.capture_kind
             self.capture_kind = None
             self._finish_capture(kind, np.asarray(self.capture_rows[:needed]))
             self.capture_rows = []
 
+    def _capture_done(self, kind, message, ok=True):
+        """End of a capture: the text, a tone (the screen may be out of view), the button state, the next step."""
+        self.calibration_info.setText(message)
+        self.ext.cues.play("done" if ok else "retry")
+        (self.failed.discard if ok else self.failed.add)(kind)
+        self.progress.hide()
+        if ok and self.queue:
+            nxt, generation = self.queue.pop(0), self.capture_generation
+            self.schedule(AUTO_PAUSE_MS, lambda: generation == self.capture_generation
+                          and self.begin_capture(nxt, from_queue=True))
+        else:
+            self.queue = []
+        self.refresh_steps()
+
     def _finish_capture(self, kind, rows):
         acc, gyro = rows[:, :3], rows[:, 3:]
         if not np.all(np.isfinite(rows)):
-            self.calibration_info.setText("IMU contained invalid samples. Repeat this step.")
+            self._capture_done(kind, "IMU contained invalid samples. Repeat this step.", ok=False)
             return
         if kind == "neutral":
             gyro_bias = np.mean(gyro, axis=0)
             if (np.max(np.linalg.norm(gyro - gyro_bias, axis=1)) > 3.0 or
                     np.max(np.linalg.norm(acc - np.mean(acc, axis=0), axis=1)) > 0.08 or
                     not 0.85 < np.linalg.norm(np.mean(acc, axis=0)) < 1.15):
-                self.calibration_info.setText("Head moved during step 1. Hold still and repeat.")
+                self._capture_done(kind, "Head moved during step 1. Hold still and repeat.", ok=False)
                 return
             self.neutral_bias = gyro_bias
             self.left_vector = None
-            self.calibration_info.setText("Step 1 done. Face forward, then click step 2 and turn LEFT on GO.")
+            self.calibrated = False
+            self._capture_done(kind, "Step 1 done. Face forward, then step 2 (click or press 2): turn LEFT at GO.")
             return
         motion = np.sum(gyro - self.neutral_bias, axis=0) / self.ext.tracker.fs
         if np.linalg.norm(motion) < 12.0:
-            self.calibration_info.setText("Movement was too small or you returned during capture. Repeat this step.")
+            self._capture_done(kind, "Movement was too small or you turned back during capture. Repeat this step.",
+                               ok=False)
             return
         if kind == "left":
             self.left_vector = motion
-            self.calibration_info.setText("Step 2 done. Face forward, then click step 3 and look UP on GO.")
+            self._capture_done(kind, "Step 2 done. Face forward, then step 3 (click or press 3): look UP at GO.")
             return
         try:
             axes = axes_from_motions(self.left_vector, motion)
         except ValueError as exc:
-            self.calibration_info.setText(str(exc))
+            self._capture_done(kind, str(exc), ok=False)
             return
         self.ext.tracker.set_calibration(axes, self.neutral_bias)
-        self.calibration_info.setText(
-            "Calibration complete. Face forward, hold still for one second, then press Recenter head.")
+        self.calibrated = True
+        self._capture_done(kind, "Calibration complete. Face forward, hold still for one second, then press "
+                                 "Recenter (R).")
+
+    def toggle_all(self):
+        if self.busy(): self.cancel(); return
+        self.queue = ["left", "up"]
+        self.begin_capture("neutral", from_queue=True)
+
+    def cancel(self):
+        self.capture_generation += 1
+        self._tick.stop()
+        self.pending, self.queue = None, []
+        self.capture_kind = None
+        self.capture_rows = []
+        self.progress.hide()
+        self.calibration_info.setText("Calibration cancelled.")
+        self.refresh_steps()
+
+    def refresh_steps(self):
+        """✓ done · ✕ repeat · ● capturing · … counting down; unmet steps disabled; next step bold."""
+        busy = self.busy()
+        nxt = next((k for _, k in STEPS if not self.step_done(k)), None)
+        for i, (label, kind) in enumerate(STEPS, 1):
+            b = self.step_buttons[kind]
+            if self.capture_kind == kind: mark = "● "
+            elif self.pending == kind: mark = "… "
+            elif kind in self.failed: mark = "✕ "
+            elif self.step_done(kind): mark = "✓ "
+            else: mark = ""
+            b.setText(mark + label)
+            b.setAccessibleName(f"Step {i}, {label[4:]}: {STATE_WORDS[mark]}")
+            blocker = self.step_blocker(kind)
+            b.setEnabled(blocker is None and not busy)
+            tip = blocker or (f"Step {i}: {STEP_WHAT[kind]} ({CAPTURE_SEC[kind]:g} s). Click, or press {i} while this "
+                              "tab is active.")
+            if mark == "✕ ": tip += " The last capture must be repeated."
+            b.setToolTip(tip)
+            f = b.font(); f.setBold(kind == nxt and not busy); b.setFont(f)
+        self.all_btn.setText("■ Cancel" if busy else "▶ Calibrate 1–3")
+        self.all_btn.setAccessibleName("Cancel calibration" if busy else "Calibrate steps 1 to 3")
+        self.all_btn.setEnabled(bool(self.ext.tracker.samples))
+        self.recenter_button.setEnabled(not busy)
 
     def recenter(self):
+        if self.busy(): return
         if self.ext.tracker.recenter():
             self.calibration_info.setText("Recentered. Current head pose is forward.")
-            self.canvas.update()
+            self.canvas.mark_recentered("manual")
         else:
             self.calibration_info.setText("Hold your head still for about one second, then try Recenter again.")
 
     def on_frame(self):
         self.canvas.update()
+        prog = self.capture_progress()
+        if prog is None:
+            self.progress.hide()
+        else:
+            frac, left = prog
+            kind = self.capture_kind
+            self.progress.setValue(int(frac * 1000))
+            self.progress.setFormat(f"Step {STEP_NO[kind]} · {STEPS[STEP_NO[kind] - 1][0][4:]} · {left:.1f} s left")
+            self.progress.show()
 
     def update_texts(self):
-        n = self.ext.tracker.samples
+        t = self.ext.tracker
+        n = t.samples
         if not n:
-            state = "waiting"
+            state = "waiting for Athena…"
         elif time.monotonic() - self.ext.last_imu_at > 1.0:
-            state = "no recent IMU"
-        elif self.ext.tracker.is_still():
+            state = "no data for over 1 s"
+        elif t.is_still():
             state = "stable"
         else:
             state = "moving"
-        self.status.setText(f"IMU: {n:,} samples · {self.ext.tracker.fs:g} Hz · {state}")
+        self.status.setText(f"<b>IMU:</b> {state}")                  # H4: the state; numbers in the tooltip
+        self.status.setAccessibleName(f"IMU: {state}")
+        self.status.setToolTip(f"{n:,} samples at {t.fs:g} Hz. Stable = no rotation and steady gravity over the "
+                               "last ~0.6 s — needed for step 1 and for Recenter.")
         if self.cam.running: self.cam_status.setText(self._camera_text())
+        yaw, pitch, roll = (round(a) for a in pose_angles(t.q))          # H12: what is only drawn, in words
+        self.canvas.setAccessibleDescription(
+            f"Head turned {abs(yaw)}° {'left' if yaw >= 0 else 'right'}, looking {'up' if pitch >= 0 else 'down'} "
+            f"{abs(pitch)}°, tilted {abs(roll)}° {'left' if roll >= 0 else 'right'}; {self.canvas.recenter_text()}")
+        if not self.busy(): self.refresh_steps()
 
     def apply_theme(self, th):
         self.canvas.set_theme(th)
+        self.cam_live.setStyleSheet(f"color:{th['q']['Bad']};font-weight:600")      # H8: contrast in both themes
 
     def clear(self):
         self.capture_generation += 1
+        self._tick.stop()
+        self.pending, self.queue = None, []
+        self.failed.clear()
         self.capture_kind = None
         self.capture_rows = []
         self.neutral_bias = None
         self.left_vector = None
+        self.calibrated = False
+        self.progress.hide()
         self.ext.tracker.axes = DEFAULT_AXES.copy()
         self.ext.tracker.reset()
-        self.status.setText("Waiting for Athena IMU…")
-        self.calibration_info.setText(
-            "Optional calibration: hold still, turn left once, then look up once. "
-            "Return to center between steps. Click a step, wait for GO, move once and hold.")
+        self.canvas.recentered = None
+        self.status.setText("<b>IMU:</b> waiting for Athena…")
+        self.calibration_info.setText(INTRO)
+        self.refresh_steps()
         self.canvas.update()
 
 
@@ -654,7 +859,20 @@ class HeadMotionPlus(Extension):
     def activate(self, app):
         self.tracker = PoseTracker(app.spec.imu.fs)
         self.last_imu_at = 0.0
+        on = lambda key: str(app.setting(key, True)).lower() in ("true", "1")
+        self.cues = Cues(enabled=on("sound_cues"))                       # H1 (shared with eye_interaction)
+        self.mirror = on("mirror_view")                                  # H7
         self.tab = app.add_tab(HeadMotionPlusTab(app.view, self))
+
+    def set_sound(self, on):
+        self.cues.enabled = bool(on)
+        self.app.set_setting("sound_cues", bool(on))
+
+    def set_mirror(self, on):
+        self.mirror = bool(on)
+        self.app.set_setting("mirror_view", bool(on))
+        self.tab.canvas.mirror = self.mirror
+        self.tab.canvas.update()
 
     def on_imu(self, x, ts):
         self.last_imu_at = time.monotonic()

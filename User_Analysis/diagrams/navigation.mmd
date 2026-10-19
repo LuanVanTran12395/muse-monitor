@@ -1,0 +1,76 @@
+---
+title: Muse Monitor — Navigation map
+---
+flowchart TB
+    START(["Mở app · run.command"])
+
+    subgraph LIVE["Cửa sổ Live"]
+        direction TB
+        MENU["<b>Menu bar</b> (luôn có)<br/>File · Analysis · HCI/BCI · Extensions"]
+        CON["<b>1 · Connect</b><br/>quét · chọn thiết bị"]
+        WAIT["<b>Connecting…</b><br/>nút Connect → Cancel"]
+        FIT["<b>2 · Fit-test</b><br/>chỉnh điện cực đến 4/4 Good"]
+        subgraph RECP["3 · Trang Recording"]
+            direction LR
+            VIEW["<b>Xem trực tiếp</b><br/>Signals · PSD · PPG · panel"]
+            REC["<b>Đang ghi</b><br/>nút đỏ ■ Stop · mm:ss<br/>tiêu đề ● REC"]
+        end
+    end
+
+    MARK["Mark event<br/>nhãn điền sẵn"]
+    CONF["Recording in progress<br/>mặc định: Keep recording"]
+    EXTM["Extensions manager"]
+    NEWX["New extension"]
+    OPEN["Open recording<br/>→ chọn thiết bị → Loading"]
+    REVW["<b>Cửa sổ Review</b><br/>cuộn thời gian · event list · tab"]
+    DATA[("data/muse_‹time›/<br/>CSV · events · session.json · report.html")]
+    LSL[["LabRecorder / công cụ LSL"]]
+    QUIT(["Đóng app"])
+
+    START -->|"tự quét 5 s"| CON
+    CON -->|"Connect → / double-click"| WAIT
+    WAIT -->|"Cancel · lỗi"| CON
+    WAIT -->|"stream bắt đầu"| FIT
+    FIT -->|"Accept →"| VIEW
+    VIEW -->|"◀ Fit-test"| FIT
+    FIT -->|"Disconnect"| CON
+    VIEW -->|"Disconnect · mất kết nối"| CON
+
+    VIEW -->|"● Start recording + event 0"| REC
+    REC -->|"■ Stop recording"| VIEW
+    REC -->|"ghi CSV · Stop → report"| DATA
+    REC -->|"phím 1–9: event tức thì"| REC
+
+    RECP <-->|"Space ⇄ Return lưu · Esc huỷ"| MARK
+
+    REC -->|"Disconnect · ⌘N · ⌘W · nút đóng"| CONF
+    CONF -->|"Keep recording"| REC
+    CONF -->|"Stop recording → report"| CON
+
+    MENU -->|"File ▸ New session ⌘N"| CON
+    MENU -->|"File ▸ Open session… ⌘O"| OPEN
+    MENU -->|"Extensions ▸ Manage…"| EXTM
+    MENU -->|"Extensions ▸ LSL Outlet ▸ Start"| LSL
+    EXTM -->|"New extension…"| NEWX
+    DATA -.->|"mở lại"| OPEN
+    OPEN --> REVW
+    REVW -->|"File ▸ Open session…"| OPEN
+    MENU -->|"File ▸ Close window ⌘W"| QUIT
+
+    classDef page fill:#fde68a,stroke:#b45309,color:#3b2300
+    classDef rec fill:#fee2e2,stroke:#dc2626,color:#450a0a,stroke-width:3px
+    classDef dialog fill:#fce7f3,stroke:#be185d,color:#4a0425
+    classDef window fill:#1d4ed8,stroke:#1e3a8a,color:#ffffff
+    classDef store fill:#dcfce7,stroke:#15803d,color:#052e16
+    classDef term fill:#1f2937,stroke:#111827,color:#ffffff
+    classDef menu fill:#dbeafe,stroke:#1d4ed8,color:#0b1b3f
+
+    class CON,WAIT,FIT,VIEW page
+    class REC rec
+    class MARK,CONF,EXTM,NEWX,OPEN dialog
+    class REVW window
+    class DATA,LSL store
+    class START,QUIT term
+    class MENU menu
+    style LIVE fill:#eff6ff,stroke:#1d4ed8,stroke-width:2px
+    style RECP fill:#fffbeb,stroke:#b45309

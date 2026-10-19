@@ -1,16 +1,23 @@
 """HTML strings for indicators used on several pages (channel quality, battery)."""
+from ... import config as C
 
 
 def quality_html(name, q, th):
-    """q = (level, band RMS, 50 Hz RMS) or None when there is no data yet."""
+    """q = (level, band RMS, mains RMS) or None when there is no data yet."""
     if q is None:
-        level, txt = "—", "&nbsp;"
+        level, txt = "—", "&nbsp;<br>&nbsp;"
     else:
-        level, b, l = q; txt = f"{b:.0f} µV · 50Hz {l:.0f}"
+        level, b, l = q
+        txt = f"signal {b:.0f} µV<br>{C.NOTCH_HZ:.0f} Hz noise {l:.0f} µV"    # RMS in BAND_HZ / around mains
     c = th["q"][level]
     return (f"<span style='color:{c};font-size:16pt'>●</span> <b>{name}</b><br>"
             f"<span style='color:{c}'>{level}</span><br>"
-            f"<span style='color:{th['muted']};font-size:8pt'>{txt}</span>")
+            f"<span style='color:{th['muted']};font-size:9pt'>{txt}</span>")
+
+
+def quality_summary(names, qs):
+    """'Contact: TP9 Good, AF7 Fair, …' — the plot's accessible description (plots are invisible to screen readers)."""
+    return "Contact: " + ", ".join(f"{n} {qs[i][0] if qs else 'not measured'}" for i, n in enumerate(names))
 
 
 def fill_quality_labels(labels, names, qs, th):

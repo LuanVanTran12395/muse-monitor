@@ -1,6 +1,7 @@
 """Find and load extensions from folders and from entry points of pip packages."""
 import importlib.util
 import inspect
+import linecache
 import os
 import sys
 import traceback
@@ -42,7 +43,7 @@ class Discovered:
 def _import_path(path):
     """Load a .py file or a package folder under a private module name so it cannot clash with other modules."""
     pkg = path.is_dir()
-    name = f"musemonitor_ext_{path.stem if not pkg else path.name}"
+    name = module_name(path)
     init = path / "__init__.py" if pkg else path
     spec = importlib.util.spec_from_file_location(name, init, submodule_search_locations=[str(path)] if pkg else None)
     mod = importlib.util.module_from_spec(spec)
@@ -72,6 +73,51 @@ def _candidates(d):
         if child.name.startswith(("_", ".")): continue          # _template, __pycache__, .DS_Store…
         if child.is_dir() and (child / "__init__.py").exists(): yield child
         elif child.suffix == ".py": yield child
+
+
+def module_name(path):
+    path = Path(path)
+    return f"musemonitor_ext_{path.stem if not path.is_dir() else path.name}"
+
+
+def source_files(source):
+    """The .py files of a folder extension (recursively) or of a single-file extension."""
+    path = Path(source)
+    if path.is_dir(): return sorted(p for p in path.rglob("*.py") if "__pycache__" not in p.parts)
+    return [path] if path.exists() else []
+
+
+def source_mtime(source):
+    """Newest modification time among the extension's .py files (0 when it is gone or a pip package)."""
+    return max((p.stat().st_mtime_ns for p in source_files(source)), default=0)
+
+
+def is_file_source(source):
+    return not str(source).startswith("package: ")
+
+
+def reimport(source):
+    """Import a folder / file extension again from disk for a reload: drop its module and sub-modules from
+    sys.modules and its cached bytecode first. Cached .pyc files are validated by source mtime (whole seconds)
+    and size, so an edit saved within the same second with the same size would otherwise load the old code."""
+    path = Path(source)
+    name = module_name(path)
+    for mod in [m for m in sys.modules if m == name or m.startswith(name + ".")]:
+        del sys.modules[mod]
+    for f in source_files(path):
+        try: Path(importlib.util.cache_from_source(str(f))).unlink(missing_ok=True)
+        except (OSError, NotImplementedError, ValueError): pass
+    importlib.invalidate_caches()
+    linecache.checkcache()                       # tracebacks show the new source lines
+    item = Discovered(id=path.stem if path.is_file() else path.name, source=str(path))
+    if not path.exists():
+        item.error = f"{path} no longer exists"; return item
+    try:
+        item.cls = extension_class(_import_path(path))
+        item.id = item.cls.id or item.id
+    except BaseException:
+        item.error = traceback.format_exc()
+    return item
 
 
 def discover(dirs=None, use_entry_points=True, skip=()):

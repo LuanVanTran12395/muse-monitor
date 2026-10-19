@@ -1,7 +1,9 @@
 """Experimental blink and sustained eye-closure avatar for Muse S Athena."""
 
 import math
+import tempfile
 import time
+from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
@@ -11,8 +13,33 @@ from scipy.signal import butter, find_peaks, sosfilt, sosfilt_zi, welch
 from musemonitor import config as app_config
 from musemonitor.core.buffers import Ring
 from musemonitor.plugins.api import BaseTab, Extension
+from musemonitor.ui.panels import SEEN_KEY, SHOWN_KEY      # only to carry panel ticks over a rename (E13)
+
+from musemonitor.plugins.cues import Cues
 
 HISTORY_SEC = app_config.MAX_WINDOW_SEC + 10      # detection history kept for the plots
+STEPS = (("1 · Eyes open", "open"), ("2 · Eyes closed", "closed"), ("3 · Blink 3×", "blink"),
+         ("4 · Glance left", "left"), ("5 · Glance right", "right"))
+STEP_KEYS = {getattr(QtCore.Qt, f"Key_{i}"): kind for i, (_, kind) in enumerate(STEPS, 1)}
+STEP_NO = {kind: i for i, (_, kind) in enumerate(STEPS, 1)}
+REQUIRED = ("open", "closed", "blink")                  # steps 1–3; 4–5 (glances) are optional
+CAPTURE_SEC = {"open": 5, "closed": 5, "blink": 4, "left": 4, "right": 4}
+COUNTDOWN_S = 3                                          # "GO in 3… 2… 1…" (time to read and get ready)
+AUTO_PAUSE_MS = 1500                                     # Calibrate 1–3: pause between steps
+STEP_WHAT = {
+    "open": "look forward with your eyes OPEN",
+    "closed": "CLOSE your eyes at the GO beep, open them at the end tones",
+    "blink": "blink three distinct times",
+    "left": "glance LEFT with your eyes only, hold ~1 s, then back to centre",
+    "right": "glance RIGHT with your eyes only, hold ~1 s, then back to centre",
+}
+STATE_WORDS = {"✓ ": "done", "⚠ ": "done, alpha did not change", "✕ ": "repeat this step",
+               "● ": "capturing", "… ": "counting down", "": "not done"}     # E14: words for screen readers
+ESTIMATE_CAPTION = {                                     # E7: closure is estimated from alpha, seconds late
+    "closed": "Eyes closed — estimated from alpha, shown a few seconds late",
+    "closing": "Eyes closing? — checking alpha (takes a few seconds)",
+    "opening": "Eyes opening? — checking alpha (takes a few seconds)",
+}
 ALPHA_EVERY_SEC = 0.45
 
 
@@ -252,6 +279,17 @@ class GazeEstimator:
         return True, ""
 
 
+def migrate_panel(settings, owner, old_titles, new_title):
+    """The tab was renamed (E13): copy the user's show/hide choice and "already announced" flag from the old
+    title to the new one, once, so the panel neither disappears nor is announced again as new."""
+    for old in old_titles:
+        for kind in ("live", "review"):
+            src, dst = (SHOWN_KEY.format(kind=kind, owner=owner, title=t) for t in (old, new_title))
+            if settings.contains(src) and not settings.contains(dst): settings.setValue(dst, settings.value(src))
+        src, dst = (SEEN_KEY.format(owner=owner, title=t) for t in (old, new_title))
+        if settings.contains(src) and not settings.contains(dst): settings.setValue(dst, True)
+
+
 class EyeCanvas(QtWidgets.QWidget):
     def __init__(self, ext):
         super().__init__()
@@ -260,19 +298,24 @@ class EyeCanvas(QtWidgets.QWidget):
         self.openness = 1.0
         self.gaze = 0.0                   # −1 = screen left … +1 = screen right (mirror view)
         self.setMinimumSize(380, 300)
+        self.setAccessibleName("Eye avatar")
 
     def set_theme(self, theme):
         self.theme = theme
         self.update()
 
     def advance(self):
-        target = 0.0 if self.ext.closed else 1.0
+        # half-open while alpha has voted once for a change (E7): the avatar shows "maybe", not a sudden switch
+        base = {"closed": 0.0, "opening": 0.3, "closing": 0.55, "open": 1.0}[self.ext.eye_estimate()]
+        target = base
         age = time.monotonic() - self.ext.blink_started
-        if 0 <= age < 0.30 and not self.ext.closed:
-            target = 1 - age/0.11 if age < 0.11 else min(1.0, (age-0.11)/0.19)
+        if 0 <= age < 0.30 and base > 0.5:
+            target = base * (1 - age/0.11 if age < 0.11 else min(1.0, (age-0.11)/0.19))
         self.openness += (max(0.0, min(1.0, target)) - self.openness) * 0.42
-        # mirror view: when you look to YOUR left the avatar's pupils move to the screen's left
+        # mirror view (default): you look to YOUR left → the pupils move to the screen's left, like a mirror;
+        # off: the avatar looks to ITS left (the screen's right), like a person facing you
         goal = {"left": -1.0, "right": 1.0}.get(getattr(self.ext, "gaze_state", "center"), 0.0)
+        if not getattr(self.ext, "mirror", True): goal = -goal
         self.gaze += (goal - self.gaze) * 0.7                    # ~0.1 s to follow the eyes
         self.update()
 
@@ -312,20 +355,39 @@ class EyeCanvas(QtWidgets.QWidget):
         painter.drawLine(QtCore.QPointF(-8, 71), QtCore.QPointF(15, 75))
         painter.setPen(_round_pen("#6b4035", 4))
         painter.drawArc(QtCore.QRectF(-45, 91, 90, 37), 190*16, 160*16)
+        caption = ESTIMATE_CAPTION.get(self.ext.eye_estimate())
+        if caption:
+            painter.resetTransform()
+            painter.setPen(QtGui.QColor(th["muted"]))
+            painter.drawText(QtCore.QRectF(0, self.height() - 28, self.width(), 24), QtCore.Qt.AlignCenter, caption)
         painter.end()
 
 
 class EyeTab(BaseTab):
-    title = "Eyes · EEG/alpha"
+    title = "Eyes (experimental)"
+    OLD_TITLES = ("Eyes · EEG/alpha",)           # before E13 — panel ticks are carried over (see migrate_panel)
+    # Keys 1–5 run calibration steps 1–5 while this tab has the focus, instead of the app's quick events
+    # "1"–"5" (see BaseTab.wants_keys). Space still marks an event.
+    wants_keys = frozenset(STEP_KEYS)
 
     def __init__(self, ctx, ext):
         super().__init__(ctx)
         self.ext = ext
         self.generation = 0
         self.info = None
+        self.pending = None              # step in its GO countdown
+        self.countdown_left = 0
+        self.queue = []                  # Calibrate 1–3: steps still to run
+        self.failed = set()              # steps whose last capture must be repeated
+        self._tick = QtCore.QTimer(self); self._tick.setInterval(1000); self._tick.timeout.connect(self._countdown_tick)
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
         layout = QtWidgets.QVBoxLayout(self)
-        self.status = QtWidgets.QLabel("Waiting for EEG…")
-        layout.addWidget(self.status)
+        chips = QtWidgets.QHBoxLayout()          # E5: one labelled readout per detector, details in tooltips
+        self.eyes_chip, self.blink_chip, self.gaze_chip = (QtWidgets.QLabel() for _ in range(3))
+        for chip in (self.eyes_chip, self.blink_chip, self.gaze_chip):
+            chips.addWidget(chip); chips.addSpacing(28)
+        chips.addStretch()
+        layout.addLayout(chips)
         self.canvas = EyeCanvas(ext)
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         splitter.addWidget(self.canvas)
@@ -333,24 +395,51 @@ class EyeTab(BaseTab):
         splitter.setSizes([320, 220])
         layout.addWidget(splitter, 1)
         row = QtWidgets.QHBoxLayout()
-        for label, kind in (("1 · Eyes open", "open"), ("2 · Eyes closed", "closed"),
-                            ("3 · Blink 3×", "blink"), ("4 · Glance left", "left"), ("5 · Glance right", "right")):
+        self.all_btn = QtWidgets.QPushButton("▶ Calibrate 1–3")
+        self.all_btn.setToolTip("Run steps 1, 2 and 3 one after the other; click again to cancel")
+        self.all_btn.clicked.connect(self.toggle_all)
+        row.addWidget(self.all_btn); row.addSpacing(10)
+        self.step_buttons = {}
+        for i, (label, kind) in enumerate(STEPS, 1):
+            if i == 1: row.addWidget(QtWidgets.QLabel("Required:"))
+            if i == 4: row.addSpacing(10); row.addWidget(QtWidgets.QLabel("Optional:"))
             button = QtWidgets.QPushButton(label)
             button.clicked.connect(lambda _=False, k=kind: self.begin(k))
-            row.addWidget(button)
+            row.addWidget(button, 1)
+            self.step_buttons[kind] = button
+        self.sound = QtWidgets.QCheckBox("Sound cues")
+        self.sound.setToolTip("Beep at GO and when each capture ends (two rising tones: done · one low tone: "
+                              "repeat the step) — needed for step 2, when your eyes are closed")
+        self.sound.setChecked(ext.cues.enabled)
+        self.sound.toggled.connect(ext.set_sound)
+        row.addWidget(self.sound)
+        self.mirror = QtWidgets.QCheckBox("Mirror view")
+        self.mirror.setToolTip("On: when you look to your left, the avatar's pupils move to the screen's left, like a "
+                               "mirror. Off: the avatar looks to its own left, like a person facing you.\n"
+                               "The Gaze plot always draws glances to your left upward (↑L) and to your right "
+                               "downward (↓R).")
+        self.mirror.setChecked(ext.mirror)
+        self.mirror.toggled.connect(ext.set_mirror)
+        row.addWidget(self.mirror)
         layout.addLayout(row)
+        self.progress = QtWidgets.QProgressBar(); self.progress.setRange(0, 1000); self.progress.hide()
+        self.progress.setAccessibleName("Calibration progress")
+        layout.addWidget(self.progress)
         self.info = ctx.plots.muted_label(
-            "Calibrate in order: look forward with eyes open, eyes closed, then blink three times. "
-            "Optional 4–5: glance left / right with the eyes only and come back. "
-            "Wait for GO before each step and keep your head still.")
+            "Calibrate in order (click or press 1–5): look forward with eyes open, eyes closed, then blink three "
+            "times. Optional 4–5: glance left / right with the eyes only and come back. Start on GO (a beep) and "
+            "keep your head still until the end tones.")
         layout.addWidget(self.info)
         layout.addWidget(ctx.plots.muted_label(
             "Experimental visual feedback. Alpha may not distinguish open and closed eyes for everyone."))
+        self.refresh_steps()
 
     # ---- detection plots (time domain, shared time axis / time range / event markers) ---------
     def _build_plots(self, ctx):
         gfx = ctx.plots.widget(pg.GraphicsLayoutWidget())
         gfx.setMinimumHeight(240)
+        gfx.setAccessibleName("Eye detection plots: blink, gaze and alpha ratio")
+        self.gfx = gfx
         self.eog_plot = ctx.plots.plot(gfx.addPlot(row=0, col=0), marker="eeg")
         self.eog_plot.setLabel("left", "Blink µV"); self.eog_plot.hideAxis("bottom")
         self.eog_plot.setClipToView(True); self.eog_plot.setDownsampling(auto=True, mode="peak")
@@ -361,6 +450,10 @@ class EyeTab(BaseTab):
         self.eog_plot.addItem(self.blink_thr)
         self.gaze_plot = ctx.plots.plot(gfx.addPlot(row=1, col=0), marker="eeg")
         self.gaze_plot.setLabel("left", "Gaze µV"); self.gaze_plot.hideAxis("bottom")
+        # E11: direction key inside the plot (a longer axis label would overlap the neighbouring plots); parented
+        # to the ViewBox, so it stays in the top-left corner while the time axis scrolls
+        self.gaze_hint = pg.TextItem("↑ your left · ↓ your right", anchor=(0, 0))
+        self.gaze_hint.setParentItem(self.gaze_plot.getViewBox()); self.gaze_hint.setPos(4, 0)
         self.gaze_plot.setXLink(self.eog_plot)
         self.gaze_plot.setClipToView(True); self.gaze_plot.setDownsampling(auto=True, mode="peak")
         self.gaze_curve = self.gaze_plot.plot()
@@ -370,6 +463,8 @@ class EyeTab(BaseTab):
         for line in self.gaze_thr: line.hide(); self.gaze_plot.addItem(line)
         self.alpha_plot = ctx.plots.plot(gfx.addPlot(row=2, col=0), marker="eeg")
         self.alpha_plot.setLabel("left", "Alpha"); self.alpha_plot.setLabel("bottom", "Time", units="s")
+        # E8: fixed 0–1 (a ratio of powers) — auto-range blew 0.835–0.845 noise up to full height
+        self.alpha_plot.enableAutoRange(axis="y", enable=False); self.alpha_plot.setYRange(0, 1, padding=0)
         self.alpha_plot.setXLink(self.eog_plot)
         for plot in (self.eog_plot, self.gaze_plot, self.alpha_plot):
             plot.getAxis("left").enableAutoSIPrefix(False)              # show 0.2…0.8, not "×0.001"
@@ -440,53 +535,184 @@ class EyeTab(BaseTab):
         line.setPen(pg.mkPen(th["hbr"], width=1.5))
         line.label.setColor(th["hbr"])
 
-    def begin(self, kind):
-        if not self.ext.samples_seen:
-            self.info.setText("Connect Athena and wait for EEG first.")
-            return
-        if kind != "open" and self.ext.open_alpha is None:
-            self.info.setText("Complete step 1 first.")
-            return
-        if kind == "blink" and self.ext.closed_alpha is None:
-            self.info.setText("Complete step 2 first.")
-            return
-        if kind == "right" and self.ext.left_capture is None:
-            self.info.setText("Complete step 4 (glance left) first.")
-            return
+    def keyPressEvent(self, ev):
+        kind = STEP_KEYS.get(ev.key())
+        if kind is None or ev.isAutoRepeat(): return super().keyPressEvent(ev)
+        self.begin(kind)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self.setFocus()                  # opening the tab makes keys 1–5 reach it at once
+
+    # ---- calibration steps (E4) -------------------------------------------------------------------
+    def step_blocker(self, kind):
+        """Why step ``kind`` cannot start yet, or None."""
+        e = self.ext
+        if not e.samples_seen: return "Connect Athena and wait for EEG first."
+        if kind != "open" and e.open_alpha is None: return "Complete step 1 first."
+        if kind == "blink" and e.closed_alpha is None: return "Complete step 2 first."
+        if kind == "right" and e.left_capture is None: return "Complete step 4 (glance left) first."
+        return None
+
+    def step_done(self, kind):
+        e = self.ext
+        return {"open": e.open_alpha is not None, "closed": e.closed_alpha is not None,
+                "blink": bool(e.estimator.blink_threshold), "left": e.left_capture is not None,
+                "right": bool(e.gaze.threshold)}[kind]
+
+    def busy(self):
+        return bool(self.pending or self.ext.capture_kind or self.queue)
+
+    def begin(self, kind, from_queue=False):
+        blocker = self.step_blocker(kind)
+        if blocker:
+            self.queue = []; self.info.setText(blocker); self.refresh_steps(); return
+        if not from_queue: self.queue = []            # a manual step ends "Calibrate 1–3"
         self.generation += 1
-        generation = self.generation
         self.ext.capture_kind = None
-        what = {"left": "glance LEFT with your eyes only, hold ~1 s, then back to centre",
-                "right": "glance RIGHT with your eyes only, hold ~1 s, then back to centre"}.get(kind, kind)
-        self.info.setText(f"Get ready: {what}. GO in one second…")
-        QtCore.QTimer.singleShot(1000, lambda: self._start(kind, generation))
+        self.failed.discard(kind)
+        self.pending, self.countdown_left = kind, COUNTDOWN_S
+        self._show_countdown()
+        self._tick.start()
+        self.refresh_steps()
+
+    def _show_countdown(self):
+        self.info.setText(f"Step {STEP_NO[self.pending]} — get ready: {STEP_WHAT[self.pending]}. "
+                          f"GO in {self.countdown_left}…")
+
+    def _countdown_tick(self):
+        if self.pending is None: self._tick.stop(); return
+        self.countdown_left -= 1
+        if self.countdown_left > 0: self._show_countdown(); return
+        self._tick.stop()
+        kind, self.pending = self.pending, None
+        self._start(kind, self.generation)
 
     def _start(self, kind, generation):
         if generation != self.generation:
             return
+        self.pending = None
         self.ext.capture_kind = kind
         self.ext.capture_raw = []
         self.ext.capture_filtered = []
         self.ext.capture_h = []
-        self.info.setText(f"GO: {kind} · keep your head still until capture ends.")
+        self.info.setText(f"GO — step {STEP_NO[kind]}: {STEP_WHAT[kind]}. Keep your head still until the end tones.")
+        self.ext.cues.play("go")
+        self.refresh_steps()
+
+    def on_capture_done(self, kind, ok):
+        """Called by the extension when a capture ended (after its message and tone)."""
+        (self.failed.discard if ok else self.failed.add)(kind)
+        self.progress.hide()
+        if ok and self.queue:
+            nxt, generation = self.queue.pop(0), self.generation
+            self.schedule(AUTO_PAUSE_MS, lambda: generation == self.generation and self.begin(nxt, from_queue=True))
+        else:
+            self.queue = []
+        self.refresh_steps()
+
+    @staticmethod
+    def schedule(ms, fn):
+        QtCore.QTimer.singleShot(ms, fn)
+
+    def toggle_all(self):
+        if self.busy(): self.cancel(); return
+        self.queue = [k for k in REQUIRED]
+        self.begin(self.queue.pop(0), from_queue=True)
+
+    def cancel(self):
+        self.generation += 1
+        self._tick.stop()
+        self.pending, self.queue = None, []
+        self.ext.capture_kind = None
+        self.progress.hide()
+        self.info.setText("Calibration cancelled.")
+        self.refresh_steps()
+
+    def refresh_steps(self):
+        """Button text / enabled state / tooltip per step: ✓ done · ⚠ done but alpha did not separate ·
+        ✕ repeat · ● capturing · … counting down; the next required step is bold."""
+        busy = self.busy()
+        nxt = next((k for k in REQUIRED if not self.step_done(k)), None)
+        for i, (label, kind) in enumerate(STEPS, 1):
+            b = self.step_buttons[kind]
+            if self.ext.capture_kind == kind: mark = "● "
+            elif self.pending == kind: mark = "… "
+            elif kind in self.failed: mark = "✕ "
+            elif kind == "closed" and self.step_done(kind) and not self.ext.alpha_enabled: mark = "⚠ "
+            elif self.step_done(kind): mark = "✓ "
+            else: mark = ""
+            b.setText(mark + label)
+            b.setAccessibleName(f"Step {i}, {label[4:]}: {STATE_WORDS[mark]}")
+            blocker = self.step_blocker(kind)
+            b.setEnabled(blocker is None and not busy)
+            tip = blocker or (f"Step {i}: {STEP_WHAT[kind]} ({CAPTURE_SEC[kind]} s). Click, or press {i} while "
+                              "this tab is active.")
+            if mark == "⚠ ": tip += " Done, but alpha did not change between open and closed eyes."
+            if mark == "✕ ": tip += " The last capture must be repeated."
+            b.setToolTip(tip)
+            f = b.font(); f.setBold(kind == nxt and not busy); b.setFont(f)
+        self.all_btn.setText("■ Cancel" if busy else "▶ Calibrate 1–3")
+        self.all_btn.setAccessibleName("Cancel calibration" if busy else "Calibrate steps 1 to 3")
+        self.all_btn.setEnabled(bool(self.ext.samples_seen))
 
     def on_frame(self):
         self.canvas.advance()
         self.refresh_plots()
+        prog = self.ext.capture_progress()
+        if prog is None:
+            self.progress.hide()
+        else:
+            frac, left = prog
+            kind = self.ext.capture_kind
+            self.progress.setValue(int(frac * 1000))
+            self.progress.setFormat(f"Step {STEP_NO[kind]} · {STEPS[STEP_NO[kind] - 1][0][4:]} · {left:.1f} s left")
+            self.progress.show()
 
     def update_texts(self):
-        state = "closed (alpha)" if self.ext.closed else "open"
-        if not self.ext.alpha_enabled:
-            state = "closure uncalibrated" if self.ext.closed_alpha is None else "alpha inconclusive"
-        blink = f" · blinks: {self.ext.blink_count}" if self.ext.estimator.blink_threshold else ""
-        ratio = f" · alpha: {self.ext.last_alpha:.2f}" if self.ext.last_alpha is not None else ""
-        gaze = ""
-        g = self.ext.gaze
+        e, g = self.ext, self.ext.gaze
+        if not e.samples_seen:
+            eyes = "waiting for EEG…"
+        elif e.closed_alpha is None:
+            eyes = "open / closed not calibrated yet (step 2)"
+        elif not e.alpha_enabled:
+            eyes = "closed-eye detection off — alpha did not change (repeat step 2)"
+        else:
+            eyes = {"closed": "closed (estimated, a few s late)", "closing": "closing?",
+                    "opening": "opening?", "open": "open"}[e.eye_estimate()]
+        self.eyes_chip.setText(f"<b>Eyes:</b> {eyes}")
+        alpha = f"{e.last_alpha:.2f}" if e.last_alpha is not None else "—"
+        thr = f"; counted as closed above {e.alpha_threshold:.2f}" if e.alpha_threshold is not None else ""
+        self.eyes_chip.setToolTip(f"Relative alpha at TP9/TP10 (8–13 Hz ÷ 4–30 Hz power, 4 s window): {alpha}{thr}. "
+                                  "Two readings in a row (about 1 s apart) are needed to switch, so closure and "
+                                  "reopening appear a few seconds late.")
+        self.blink_chip.setText(f"<b>Blinks:</b> {e.blink_count}" if e.estimator.blink_threshold
+                                else "<b>Blinks:</b> calibrate step 3")
+        self.blink_chip.setToolTip("Large, simultaneous AF7/AF8 deflections above the calibrated threshold "
+                                   "(dashed line on the Blink plot). Head motion pauses detection.")
         if g.threshold:
             swing = float(np.max(np.abs(g.h_history))) if len(g.h_history) else 0.0
-            gaze = (f" · gaze: {self.ext.gaze_state} (L {self.ext.glance_count['left']} / "
-                    f"R {self.ext.glance_count['right']}) · swing {swing:.0f}/{g.threshold:.0f} µV")
-        self.status.setText(f"Eyes: {state}{blink}{gaze}{ratio}")
+            self.gaze_chip.setText(f"<b>Gaze:</b> {e.gaze_state} · left {e.glance_count['left']} · "
+                                   f"right {e.glance_count['right']}")
+            self.gaze_chip.setToolTip(f"Largest left/right eye movement in the last 2 s: {swing:.0f} µV — a glance "
+                                      f"needs {g.threshold:.0f} µV. If glances are missed, repeat steps 4–5 with a "
+                                      "wider glance. " + ("Mirror view: you look left → the pupils move to the "
+                                      "screen's left." if e.mirror else "Avatar view: you look left → the avatar "
+                                      "looks to its left (the screen's right)."))
+        else:
+            self.gaze_chip.setText("<b>Gaze:</b> optional steps 4–5")
+            self.gaze_chip.setToolTip("Left / right glances need steps 4 and 5.")
+        # E14: plain-text names (labels hold rich text) and descriptions of what is only drawn
+        for chip in (self.eyes_chip, self.blink_chip, self.gaze_chip):
+            chip.setAccessibleName(chip.text().replace("<b>", "").replace("</b>", ""))
+        self.canvas.setAccessibleDescription(
+            f"Eyes {e.eye_estimate() if e.alpha_enabled else 'open (closure not detected)'}; looking {e.gaze_state}; "
+            f"{e.blink_count} blinks")
+        thr = lambda v, unit="": f"{v:.2f}{unit}" if v is not None else "not calibrated"
+        self.gfx.setAccessibleDescription(
+            f"Blink threshold {thr(e.estimator.blink_threshold, ' µV')}; glance threshold "
+            f"{thr(g.threshold, ' µV')}; alpha ratio {alpha}, closed above {thr(e.alpha_threshold)}")
+        if not self.busy(): self.refresh_steps()
 
     def on_analysis(self):
         self.ext.analyze_alpha()
@@ -498,6 +724,9 @@ class EyeTab(BaseTab):
         self.alpha_curve.setPen(pg.mkPen(th["eeg"][0], width=1.6))
         self.alpha_curve.setSymbolBrush(pg.mkBrush(th["eeg"][0])); self.alpha_curve.setSymbolPen(None)
         self.gaze_curve.setPen(pg.mkPen(th["eeg"][2], width=1.2))
+        self.gaze_hint.setColor(th["muted"])
+        bg = QtGui.QColor(th["bg"]); bg.setAlpha(215)
+        self.gaze_hint.fill = pg.mkBrush(bg); self.gaze_hint.setZValue(20); self.gaze_hint.update()   # above the trace
         self._gaze_brush = {"left": pg.mkBrush(th["hbo"]), "right": pg.mkBrush(th["hbr"]),
                             "center": pg.mkBrush(th["muted"])}
         self.gaze_marks.setPen(pg.mkPen(th["bg"], width=1))
@@ -507,6 +736,10 @@ class EyeTab(BaseTab):
 
     def clear(self):
         self.generation += 1
+        self._tick.stop()
+        self.pending, self.queue = None, []
+        self.failed.clear()
+        self.progress.hide()
         self.ext.reset()
         self.canvas.openness = 1.0
         self.canvas.update()
@@ -532,8 +765,45 @@ class EyeInteraction(Extension):
         self.gaze = GazeEstimator(app.spec.eeg.fs, app.spec.eeg.names)
         self.eog = Ring(1, int(app.spec.eeg.fs * app_config.MAX_WINDOW_SEC))   # filtered AF7/AF8 mean
         self.heog = Ring(1, int(app.spec.eeg.fs * app_config.MAX_WINDOW_SEC))  # filtered AF7 − AF8
+        self.app = app
+        # tones are regenerated on demand in a temp folder: nothing is written to the user's data folders
+        self.cues = Cues(Path(tempfile.gettempdir()) / "musemonitor_eye_cues",
+                         enabled=str(app.setting("sound_cues", True)).lower() in ("true", "1"))
+        self.mirror = str(app.setting("mirror_view", True)).lower() in ("true", "1")
         self.reset()
+        migrate_panel(app.view.settings, app.id, EyeTab.OLD_TITLES, EyeTab.title)
         self.tab = app.add_tab(EyeTab(app.view, self))
+
+    def set_mirror(self, on):
+        self.mirror = bool(on)
+        self.app.set_setting("mirror_view", bool(on))
+        self.tab.canvas.update()
+
+    def set_sound(self, on):
+        self.cues.enabled = bool(on)
+        self.app.set_setting("sound_cues", bool(on))
+
+    def _capture_done(self, message, ok=True):
+        """End of a calibration capture: the text, and a tone so it is noticed with the eyes closed (E1)."""
+        self.tab.info.setText(message)
+        self.cues.play("done" if ok else "retry")
+        self.tab.on_capture_done(self.finished_kind, ok)
+
+    def capture_target(self, kind):
+        return int(self.estimator.fs * CAPTURE_SEC[kind])
+
+    def capture_progress(self):
+        """(fraction 0–1, seconds left) of the running capture, or None."""
+        if self.capture_kind is None: return None
+        target = self.capture_target(self.capture_kind)
+        n = sum(chunk.shape[1] for chunk in self.capture_raw)
+        return min(1.0, n / target), max(0.0, (target - n) / self.estimator.fs)
+
+    def eye_estimate(self):
+        """open | closing | closed | opening — "closing"/"opening": alpha voted once for a change (E7)."""
+        if not self.alpha_enabled: return "open"
+        if self.closed: return "opening" if self.open_votes >= 1 else "closed"
+        return "closing" if self.closed_votes >= 1 else "open"
 
     def reset(self):
         self.estimator.reset()
@@ -586,8 +856,7 @@ class EyeInteraction(Extension):
             self.capture_raw.append(np.asarray(x, dtype=float).copy())
             self.capture_filtered.append(filtered.copy())
             self.capture_h.append(h.copy())
-            target = int(self.estimator.fs * (4 if self.capture_kind in ("blink", "left", "right") else 5))
-            if sum(chunk.shape[1] for chunk in self.capture_raw) >= target:
+            if sum(chunk.shape[1] for chunk in self.capture_raw) >= self.capture_target(self.capture_kind):
                 self._finish_capture()
             return
         if blink and time.monotonic() >= self.motion_until:
@@ -622,7 +891,7 @@ class EyeInteraction(Extension):
         self.closed_periods = [p for p in self.closed_periods if p[1] is None or p[1] >= cut]
 
     def _finish_capture(self):
-        kind = self.capture_kind
+        kind = self.finished_kind = self.capture_kind
         self.capture_kind = None
         raw = np.concatenate(self.capture_raw, axis=1)
         filtered = np.concatenate(self.capture_filtered, axis=1)
@@ -631,11 +900,11 @@ class EyeInteraction(Extension):
         self.capture_h = []
         if kind == "left":
             self.left_capture = h
-            self.tab.info.setText("Step 4 done. Click step 5 and glance RIGHT on GO, then back to centre.")
+            self._capture_done("Step 4 done. Click step 5 (or press 5) and glance RIGHT on GO, then back to centre.")
             return
         if kind == "right":
             ok, why = self.gaze.calibrate(self.left_capture, h)
-            self.tab.info.setText("Glance calibration complete. Look left / right with your eyes only." if ok else why)
+            self._capture_done("Glance calibration complete. Look left / right with your eyes only." if ok else why, ok)
             if not ok: self.left_capture = None
             return
         if kind in ("open", "closed"):
@@ -643,7 +912,7 @@ class EyeInteraction(Extension):
             back = raw[self.estimator.back, self.estimator.fs:]
             ratio = relative_alpha(back, self.estimator.fs)
             if ratio is None:
-                self.tab.info.setText("Posterior EEG was too noisy or incomplete. Repeat this step.")
+                self._capture_done("Posterior EEG was too noisy or incomplete. Repeat this step.", ok=False)
                 return
             if kind == "open":
                 self.open_alpha = ratio
@@ -651,20 +920,20 @@ class EyeInteraction(Extension):
                 self.alpha_enabled = False
                 self.estimator.calibrate_open(filtered[:, self.estimator.fs:])
                 self.gaze.calibrate_noise(h[self.estimator.fs:])
-                self.tab.info.setText("Step 1 done. Click step 2, then close your eyes on GO.")
+                self._capture_done("Step 1 done. Click step 2 (or press 2), close your eyes at the GO beep and open them at the end tones.")
             else:
                 self.closed_alpha = ratio
                 self.alpha_enabled = (ratio > self.open_alpha*1.25 and
                                       ratio - self.open_alpha > 0.025)
                 self.alpha_threshold = (ratio + self.open_alpha)/2 if self.alpha_enabled else None
-                msg = ("Step 2 done. Click step 3 and blink three times on GO." if self.alpha_enabled else
+                msg = ("Step 2 done. Click step 3 (or press 3) and blink three times on GO." if self.alpha_enabled else
                        "Alpha did not separate open/closed states. Blink animation can still work; click step 3.")
-                self.tab.info.setText(msg)
+                self._capture_done(msg)
         else:
             if self.estimator.calibrate_blinks(filtered):
-                self.tab.info.setText("Calibration complete. Blink naturally; keep your head still.")
+                self._capture_done("Calibration complete. Blink naturally; keep your head still.")
             else:
-                self.tab.info.setText("Could not identify two clear blinks. Keep still and repeat step 3.")
+                self._capture_done("Could not identify two clear blinks. Keep still and repeat step 3.", ok=False)
 
     def analyze_alpha(self):
         """Every ~0.45 s: alpha ratio for the plot (always) and the open/closed decision (only after

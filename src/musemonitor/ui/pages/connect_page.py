@@ -22,17 +22,24 @@ class ConnectPage(QtWidgets.QWidget):
                                           "to it, then pick the device from the list."))
         row = QtWidgets.QHBoxLayout()
         self.scan_btn = QtWidgets.QPushButton("⟳ Rescan"); self.scan_btn.clicked.connect(self.rescan_clicked)
+        self.scan_busy = QtWidgets.QProgressBar(); self.scan_busy.setRange(0, 0)      # indeterminate while scanning
+        self.scan_busy.setTextVisible(False); self.scan_busy.setFixedWidth(120); self.scan_busy.hide()
         self.scan_label = QtWidgets.QLabel("")
-        row.addWidget(self.scan_btn); row.addWidget(self.scan_label); row.addStretch()
+        row.addWidget(self.scan_btn); row.addWidget(self.scan_busy); row.addWidget(self.scan_label); row.addStretch()
         v.addLayout(row)
-        self.dev_list = QtWidgets.QListWidget()
-        self.dev_list.setStyleSheet("QListWidget{font-size:14pt} QListWidget::item{padding:10px}")
+        self.dev_list = QtWidgets.QListWidget(); self.dev_list.setAccessibleName("Devices found")
+        # Font/padding through the font and item size, not a style sheet: a style sheet makes the list ignore
+        # the app palette, so it stayed dark in the Light theme
+        f = self.dev_list.font(); f.setPointSizeF(14); self.dev_list.setFont(f)
+        self.dev_list.setSpacing(4)
+        self.dev_list.setMaximumHeight(300)             # a few devices; the Connect button stays close to the list
         self.dev_list.itemSelectionChanged.connect(self._on_selected)
         self.dev_list.itemDoubleClicked.connect(lambda _: self.connect_clicked.emit())
-        v.addWidget(self.dev_list, 1)
+        v.addWidget(self.dev_list)
         manual = QtWidgets.QHBoxLayout()
         manual.addWidget(QtWidgets.QLabel("Or enter name:"))
         self.dev_name = QtWidgets.QLineEdit(ctx.settings.value("last_device", ""))
+        self.dev_name.setAccessibleName("Device name")
         self.dev_name.setPlaceholderText("e.g. MuseS-EDAA")
         self.dev_name.textChanged.connect(lambda t: self.conn_btn.setEnabled(bool(t.strip()) and not self.busy))
         manual.addWidget(self.dev_name, 1)
@@ -44,6 +51,7 @@ class ConnectPage(QtWidgets.QWidget):
         self.conn_btn.clicked.connect(self.connect_clicked)
         bottom.addWidget(self.status, 1); bottom.addWidget(self.conn_btn)
         v.addLayout(bottom)
+        v.addStretch(1)
 
     def device_name(self):
         return self.dev_name.text().strip()
@@ -62,6 +70,7 @@ class ConnectPage(QtWidgets.QWidget):
     # ---- state driven by the controller ------------------------------------
     def set_scanning(self, on):
         self.scan_btn.setEnabled(not on and not self.busy)
+        self.scan_busy.setVisible(on)
         if on: self.scan_label.setText(f"Scanning Bluetooth ({C.SCAN_SEC} s)…")
 
     def set_scan_message(self, text):
@@ -77,8 +86,11 @@ class ConnectPage(QtWidgets.QWidget):
             bars = "▂▄▆█"[:max(1, min(4, (rssi + 100) // 12))]
             it = QtWidgets.QListWidgetItem(f"{name}    {bars}  {rssi} dBm{kind}" + ("    (last used)" if name == last else ""))
             it.setData(QtCore.Qt.UserRole, name); it.setData(self.PROFILE_ROLE, pid); it.setToolTip(addr)
+            it.setSizeHint(QtCore.QSize(0, 40))
             self.dev_list.addItem(it)
             if name == last: it.setSelected(True)
+        if len(devs) == 1 and not self.dev_list.selectedItems() and not self.busy:
+            self.dev_list.item(0).setSelected(True)     # only one headset around → ready to Connect at once
         self.scan_label.setText(f"Found {len(devs)} device(s)" if devs else "No device found — make sure the headset is on, then rescan.")
 
     def set_busy(self, busy):

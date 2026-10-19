@@ -42,10 +42,14 @@ class ExtensionsDialog(QtWidgets.QDialog):
         self.toggle_btn.setToolTip("Unload: remove the selected extension now (this session only). "
                                    "Load: start an unloaded / disabled extension now.")
         self.toggle_btn.clicked.connect(self._toggle_selected)
+        self.reload_btn = QtWidgets.QPushButton("Reload"); self.reload_btn.setEnabled(False)
+        self.reload_btn.setToolTip("Import the selected extension's file again and run the new code "
+                                   "(not while recording; not for pip packages)")
+        self.reload_btn.clicked.connect(self._reload_selected)
         new_btn = QtWidgets.QPushButton("New extension…"); new_btn.clicked.connect(self._new)
         open_btn = QtWidgets.QPushButton("Open extensions folder"); open_btn.clicked.connect(self._open_folder)
         close_btn = QtWidgets.QPushButton("Close"); close_btn.clicked.connect(self.accept)
-        row.addWidget(update_btn); row.addWidget(self.toggle_btn); row.addWidget(new_btn); row.addWidget(open_btn); row.addStretch(); row.addWidget(close_btn)
+        row.addWidget(update_btn); row.addWidget(self.toggle_btn); row.addWidget(self.reload_btn); row.addWidget(new_btn); row.addWidget(open_btn); row.addStretch(); row.addWidget(close_btn)
         v.addLayout(row)
         self._fill()
 
@@ -91,10 +95,21 @@ class ExtensionsDialog(QtWidgets.QDialog):
         row = self.manager.records.index(r)
         self._fill(); self.table.selectRow(row); self._show_details()
 
+    def _reload_selected(self):
+        r = self._selected()
+        if r is None: return
+        new, msg = self.manager.reload(r.id)
+        self.result.setText(msg)
+        row = self.manager.records.index(new) if new is not None else self.manager.records.index(r)
+        self._fill(); self.table.selectRow(row); self._show_details()
+
     def _show_details(self):
         r = self._selected()
         if r is None:
-            self.toggle_btn.setEnabled(False); return
+            self.toggle_btn.setEnabled(False); self.reload_btn.setEnabled(False); return
+        refusal = self.manager.reload_refusal(r)
+        self.reload_btn.setEnabled(refusal is None)
+        self.reload_btn.setToolTip(refusal or "Import the file again and run the new code")
         can_load = r.cls is not None and r.status in ("unloaded", "disabled")
         self.toggle_btn.setText("Unload" if r.status == "active" else "Load")
         self.toggle_btn.setEnabled(r.status == "active" or can_load)

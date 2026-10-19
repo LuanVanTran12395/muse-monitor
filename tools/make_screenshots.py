@@ -88,6 +88,9 @@ def main():
 
     def shot(name):
         app.processEvents()
+        w.statusBar().clearMessage()                 # e.g. "5 new extension panels…" from the first start
+        w.ext_msg.clear_message()                    # and the sample extensions' own messages
+        app.processEvents()
         w.grab().save(str(a.out / name)); print("saved", a.out / name)
 
     w.apply_theme("Light")
@@ -113,7 +116,9 @@ def main():
     rp = w.rec_page
     rp.range_spin.setValue(10)
     shots = [(0, "signals", 10), (1, "psd", 30), (2, "ppg_hrv", 60)]
-    shots += [(i, "ext_" + t.owner, 30) for i, t in enumerate(rp.tab_list) if t.owner in ("band_power", "eye_interaction")]
+    for owner in ("band_power", "eye_interaction"):                  # extension panels start hidden: tick them
+        for p in w.panels.of_owner(owner): w.panels.set_shown(p, True)
+    shots += [(rp.tabs.indexOf(t), "ext_" + t.owner, 30) for t in rp.tab_list if t.owner in ("band_power", "eye_interaction")]
     for theme in ("Light", "Dark"):
         w.apply_theme(theme)
         for i, name, span in shots:

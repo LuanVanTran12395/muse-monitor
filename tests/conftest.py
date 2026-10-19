@@ -45,3 +45,16 @@ def pytest_unconfigure(config):
     if "PySide6" in sys.modules:
         sys.stdout.flush(); sys.stderr.flush()
         os._exit(_EXIT_STATUS)
+
+
+@pytest.fixture(autouse=True)
+def _drain_qt_events():
+    """After every test, process the Qt events it left behind (layout/resize of its closed windows, deferred
+    deletes). Tests never run an event loop between them, so these used to pile up and land on the next test
+    that waits on the event loop with a deadline (e.g. lsl_outlet's linger test took > 1.6 s in one call)."""
+    yield
+    from PySide6 import QtCore, QtWidgets
+    app = QtWidgets.QApplication.instance()
+    if app is not None:
+        QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+        app.processEvents()

@@ -43,21 +43,32 @@ connection.
 1. **Connect** — every supported headset in range is listed (with its type when several device
    libraries are installed), e.g. `MuseS-EDAA`. Pick one and press **Connect**.
    Choosing a device of another type opens a window configured for it; the last type used is
-   reopened next time.
+   reopened next time. When only one headset is found it is selected for you.
 2. **Fit-test** — the head map turns each electrode green / amber / red from the live signal (RMS in
    1–40 Hz and mains noise; Muse does not measure impedance). Adjust until all are green, then **Accept**.
+   Accepting while a channel is Bad / No signal asks first (default: keep adjusting). The quality at
+   Accept is saved in the recording's `session.json` (`fit_test`).
 3. **Recording screen**
+   - **● Start recording** (⌘R) — while recording the button is red with the elapsed time
+     (`■ Stop recording · 3:07`) and the window title starts with `● REC 3:07`. Disconnect, New session
+     and closing the window ask before stopping a recording (default: keep recording).
    - Filters (1–40 Hz band-pass, 50 Hz notch), fixed ±200 µV scale.
    - **Time range**: type a number and press Enter — it applies to every time-domain plot. The x axis
      follows only this value (mouse zoom/pan on x is disabled; y can still be zoomed).
-   - **Space** marks an event: type a label, Return to save, Esc to cancel. Lines appear on all plots.
-   - **Timing** readout: measured rate per stream and timestamp/packet anomalies (see *Timing*).
+   - **Space** marks an event: type a label (the previous one is pre-filled), Return to save, Esc to
+     cancel. **1–9** mark an event with that label at once, without the prompt. Lines appear on all plots.
+   - **Timing**: `OK`, or `⚠ N issues` with the details in its tooltip (see *Timing*). **Details ▾** shows
+     the measured rate, samples received and latest values. 🕒 is the wall-clock time of the plots'
+     right edge.
+   - After Stop: **Saved ‹folder›/ — Open report · Open folder**.
    - Tabs: **Signals** (EEG, optics, IMU), **EEG PSD** (spectrogram per channel; window / step / max
      frequency), **PPG · HRV · fNIRS**, plus the extension panels you tick in the menu bar (below).
-4. **Theme** — Dark / Light, bottom right.
+4. **Theme** — **View ▸ Theme**: Dark / Light.
 5. **File menu**
    - **New session** (⌘N) — stops recording (the report is still written), disconnects, clears data and
      events, and returns to Connect.
+   - **Open recent** — the last 8 recordings; **Open last recording folder / Open last report**.
+   - **Start / Stop recording** (⌘R), **Fit-test** (⌘T).
    - **Open session…** (⌘O) — pick a recording folder, its `session.json` or any of its CSV files (old flat
      files in `data/` too). It opens in its own **review window**; the live window keeps running, and
      several recordings can be open side by side. Scroll through the whole session with the scrollbar,
@@ -65,11 +76,13 @@ connection.
      and PPG · HRV · fNIRS work as live; extensions that support review (see the table below) are
      replayed the whole recording in the background and follow the scrollbar.
 
-6. **Menu bar**: `File` · `Analysis` · `HCI/BCI` · `Extensions`
+6. **Menu bar**: `File` · `View` · `Analysis` · `HCI/BCI` · `Extensions`
    - **Analysis** — extension panels grouped as EEG, Heart & optics, Data quality, Other.
    - **HCI/BCI** — interaction panels: Eyes (blink / glance / eye closure), Motion (3D head).
    - Tick a panel to show it as a tab, untick to hide it; the choice is remembered. Panels start hidden.
-   - **Extensions** — each extension's actions in its own submenu, plus Check for new / Manage.
+   - **Extensions** — each extension's actions in its own submenu, plus Check for new / Reload changed
+     extensions (⌘⇧R, after editing an extension's file; not while recording) / Manage. Extension messages
+     appear at the bottom right with 🧩 and clear themselves.
 
 ## Recording and data
 
@@ -82,9 +95,26 @@ start. **Stop** closes the files and writes the report:
 | `…_optics.csv`, `…_imu.csv` | optical channels, accelerometer + gyroscope (only for streams the device has) |
 | `…_events.csv` | `timestamp,label` — the automatic `0`, then your Space events |
 | `…_bandpower.csv` etc. | files written by extensions |
-| `session.json` | device profile, device name, app version, start/stop time, and per stream: file, sampling rate, channels, units — lets **Open session** identify the device without guessing |
+| `session.json` | device profile, device name, app version, start/stop time, and per stream: file, sampling rate, channels, units — lets **Open session** identify the device without guessing. Optional `fit_test` (below) |
 | `report.html` | whole-session Welch PSD of every stream, EEG band powers + alpha peak, cardiac peak per optical channel, events |
 | `psd_eeg.csv`, `psd_optics.csv`, `psd_imu.csv` | the PSD values behind the report |
+
+`session.json` → `fit_test` (optional; older recordings do not have it, and readers ignore keys they do
+not know, so `schema` stays `1`):
+
+```jsonc
+"fit_test": {
+  "accepted": true,              // false: recording started without Accept on this connection (e.g. ⌘R)
+  "measured_unix": 1792310400.5, // when this snapshot was taken (Accept, or Start recording)
+  "all_good": false,
+  "channels": {"TP9": {"level": "Good", "signal_rms_uv": 8.1, "mains_rms_uv": 2.0},
+               "AF7": {"level": "Bad",  "signal_rms_uv": null, "mains_rms_uv": null}}
+}
+```
+
+`level` is `Good` / `Fair` / `Bad` / `No signal`, or `—` when nothing was measured yet; RMS values are µV
+over the last 2 s (`signal` in 1–40 Hz, `mains` around 50 Hz), `null` when not finite. If the snapshot
+cannot be written, `session.json` gets `fit_test_error` instead and the recording goes on.
 
 Timestamps are Unix seconds, so all files can be aligned. Set `MUSEMONITOR_DATA_DIR` to record
 elsewhere. Older flat recordings can be moved into session folders, with a report, by
@@ -125,6 +155,7 @@ Bundled extensions:
 | `artifact_log` | Analysis ▸ Data quality | marks blinks (peak shape, both frontal channels) and noisy 1 s epochs — EMG, large amplitude, flat signal, head motion — behind each channel's signal, with the blink detector's own trace; explicit, adjustable thresholds; `<rec>_artifacts.csv` while recording | EEG (+ IMU for motion) | ✓ |
 | `eye_interaction` | HCI/BCI ▸ Eyes | avatar + plots: blinks (AF7/AF8), left/right glances (AF7 − AF8, calibrated), eye closure from TP9/TP10 alpha | Athena EEG | — |
 | `head_motion`, `head_motion_plus` | HCI/BCI ▸ Motion | 3D head pose from the IMU; *plus*: guided axis calibration and an optional camera "facing the screen" reference (off by default, asks permission, frames never saved) | Athena IMU (+ `opencv-python-headless` for the camera) | — |
+| `lsl_outlet` | Extensions ▸ LSL Outlet | streams live EEG, your event markers and a timing-quality stream to Lab Streaming Layer (LabRecorder / XDF); off until *Start LSL streams*; timestamps are host-receive based and smoothed, not calibrated against a stimulus — see its README | Athena EEG + `pip install -e .[lsl]` | — |
 
 **Review** = also runs in review windows (File ▸ Open session): the recording is replayed to the
 extension and its tab follows the scrollbar (extension API 2, `supports_review`).
@@ -233,7 +264,6 @@ project: [CLAUDE.md](CLAUDE.md).
 | `tools/` | `capture_athena.py` (raw BrainFlow fixture for golden tests), `organize_data.py` (old flat recordings → session folders), `make_screenshots.py` (README images from synthetic data). |
 | `tests/` | pytest suite on deterministic synthetic signals; runs offscreen, no headset needed. |
 | `docs/` | [EXTENSIONS.md](docs/EXTENSIONS.md) (extension guide) and screenshots. |
-| `debate/` | Design proposals; structural changes are proposed here first. |
 | `data/` | Local recordings (git-ignored). |
 
 ### Tests

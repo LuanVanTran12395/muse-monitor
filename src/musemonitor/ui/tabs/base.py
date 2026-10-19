@@ -11,6 +11,11 @@ class BaseTab(QtWidgets.QWidget):
     title = "Tab"
     owner = None           # id of the owning extension (None = built-in tab)
     failed = False         # extension tab raised → stop calling its hooks
+    # Keys the app reserves on the Recording screen — Space (mark event with label) and 1–9 (quick event) —
+    # reach the tab instead while the keyboard focus is inside it, if the tab claims them here.
+    # Give the tab (or a child) focus, e.g. self.setFocusPolicy(Qt.StrongFocus), so it receives keys at all.
+    wants_keys = frozenset()        # e.g. {QtCore.Qt.Key_1, QtCore.Qt.Key_2}
+    wants_all_keys = False          # True: every reserved key goes to the tab
 
     def __init__(self, ctx):
         super().__init__()

@@ -3,7 +3,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 
 from ... import config as C
-from ..widgets.indicators import fill_quality_labels
+from ..widgets.indicators import fill_quality_labels, quality_summary
 from .base import BaseTab
 
 
@@ -21,6 +21,7 @@ class SignalsTab(BaseTab):
         outer.addWidget(self.splitter, 1)
 
         self.graphics = reg.widget(pg.GraphicsLayoutWidget()); self.splitter.addWidget(self.graphics)
+        self.graphics.setAccessibleName(f"EEG signals, {sp.eeg.n} channels")
         self.plots, self.curves, self.q_labels = [], [], []
         for i, name in enumerate(sp.eeg.names):
             lab = self.graphics.addLabel(row=i, col=0)   # quality readout at the start of each channel
@@ -38,7 +39,8 @@ class SignalsTab(BaseTab):
 
         self.opt_plot = reg.widget(pg.PlotWidget())
         self.opt_plot.setMinimumHeight(120)
-        self.opt_plot.setLabel("left", "Optical (mean-removed)")
+        self.opt_plot.setLabel("left", "Optical Δ (a.u.)")      # short enough not to be cut at the minimum height
+        self.opt_plot.setToolTip("Raw optical channels, mean removed over the time range (arbitrary units)")
         self.opt_plot.setLabel("bottom", "Time", units="s")
         reg.plot(self.opt_plot.getPlotItem(), marker="opt")
         self.opt_plot.setDownsampling(auto=True, mode="peak"); self.opt_plot.setClipToView(True)
@@ -54,7 +56,7 @@ class SignalsTab(BaseTab):
         for pw, lab in ((self.acc_plot, "Accel (g)"), (self.gyr_plot, "Gyro (°/s)")):
             pw.setMinimumHeight(110); pw.setLabel("left", lab); pw.setLabel("bottom", "Time", units="s")
             reg.plot(pw.getPlotItem(), marker="imu")
-            reg.legend(pw.addLegend(offset=(5, 5)))
+            reg.legend(pw.addLegend(offset=(5, 5), colCount=3))     # one compact row: covers less of the traces
             imu_row.addWidget(pw)
         self.acc_curves = [self.acc_plot.plot(name="xyz"[i]) for i in range(sp.n_acc)]
         self.gyr_curves = [self.gyr_plot.plot(name="xyz"[i]) for i in range(sp.imu.n - sp.n_acc)]
@@ -72,6 +74,7 @@ class SignalsTab(BaseTab):
 
     def set_quality(self, qs):
         fill_quality_labels(self.q_labels, self.ctx.spec.eeg.names, qs, self.ctx.th)
+        self.graphics.setAccessibleDescription(quality_summary(self.ctx.spec.eeg.names, qs))
 
     def on_frame(self):
         st, sp, T = self.ctx.store, self.ctx.spec, self.ctx.window_sec

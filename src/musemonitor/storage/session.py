@@ -41,9 +41,12 @@ def data_root():
 class RecordingSession:
     STREAMS = {"eeg": "eeg", "opt": "optics", "imu": "imu"}       # store key → spec key
 
-    def __init__(self, spec, root=None, device="", stamp=None, folder=None, profile_id=None):
+    def __init__(self, spec, root=None, device="", stamp=None, folder=None, profile_id=None, fit_test=None):
         """folder: use an EXISTING folder (report for an old recording) instead of creating one;
-        session.json is only written for new folders. profile_id: device profile (None = Muse S Athena)."""
+        session.json is only written for new folders. profile_id: device profile (None = Muse S Athena).
+        fit_test: optional dict (contact quality when the fit-test was accepted) → session.json "fit_test";
+        an additive key — readers ignore keys they do not know, so the schema number is unchanged."""
+        self.fit_test = fit_test
         stamp = stamp or time.strftime("%Y%m%d_%H%M%S")
         new_folder = folder is None
         if folder is None:
@@ -75,8 +78,14 @@ class RecordingSession:
             if not s.n: continue
             f = self.eeg_path if key == "eeg" else companion_path(self.eeg_path, key)
             streams[key] = dict(file=f.name, fs=s.fs, channels=list(s.names), units=_units(key, s.names))
-        return dict(schema=META_SCHEMA, app_version=__version__, profile_id=self.profile_id, device_name=self.device,
+        meta = dict(schema=META_SCHEMA, app_version=__version__, profile_id=self.profile_id, device_name=self.device,
                     started_unix=self.started, stopped_unix=self.ended, streams=streams)
+        if self.fit_test is not None:
+            try:                                  # optional extra: never let it break session.json or the recording
+                meta["fit_test"] = json.loads(json.dumps(self.fit_test, allow_nan=False))
+            except (TypeError, ValueError) as e:
+                meta["fit_test_error"] = f"{type(e).__name__}: {e}"
+        return meta
 
     def write_meta(self):
         """session.json next to the CSVs (an extra file; the CSVs themselves are unchanged)."""

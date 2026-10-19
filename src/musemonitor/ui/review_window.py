@@ -31,6 +31,7 @@ from .pages import RecordingPage
 from .panels import PanelMenus
 from .plotkit import PlotRegistry
 from .theme import THEMES, DEFAULT_THEME, apply_app_theme
+from .widgets.ext_status import ExtensionStatus
 from .widgets.extensions_dialog import ExtensionsDialog
 
 SCROLL_UNIT = 0.1                 # seconds per scrollbar step
@@ -42,6 +43,11 @@ def _fmt_time(sec):
     m, s = divmod(max(0.0, sec), 60)
     h, m = divmod(int(m), 60)
     return f"{h}:{m:02d}:{s:04.1f}" if h else f"{m}:{s:04.1f}"
+
+
+def _clock(t_unix):
+    """Wall-clock time of a recording instant — matches a lab notebook (V11)."""
+    return time.strftime("%H:%M:%S", time.localtime(t_unix))
 
 
 def ask_open_path(parent):
@@ -175,7 +181,7 @@ class ReviewWindow(QtWidgets.QMainWindow):
 
         self.ev_list = QtWidgets.QListWidget()
         for t, label in st.events:
-            it = QtWidgets.QListWidgetItem(f"{_fmt_time(t - st.t0)}   {label}")
+            it = QtWidgets.QListWidgetItem(f"{_fmt_time(t - st.t0)}   {_clock(t)}   {label}")
             it.setData(QtCore.Qt.UserRole, t - st.t0); self.ev_list.addItem(it)
         if not st.events: self.ev_list.addItem("(no events)")
         self.ev_list.itemActivated.connect(self._jump_to_item); self.ev_list.itemClicked.connect(self._jump_to_item)
@@ -194,10 +200,19 @@ class ReviewWindow(QtWidgets.QMainWindow):
         self.ext_menu = self.menuBar().addMenu("Extensions")
         self.ext_menu_sep = self.ext_menu.addSeparator()       # extension actions are inserted above
         self.ext_menu.addAction("Manage extensions…", lambda: ExtensionsDialog(self.extensions, self).exec())
-        self.ext_status = QtWidgets.QLabel()
+        self.ext_status = QtWidgets.QLabel()                # replay progress
         self.statusBar().addPermanentWidget(self.ext_status)
+        self.ext_msg = ExtensionStatus()                     # app.show_status() of extensions
+        self.ctx.plots.muted.append(self.ext_msg)
+        self.statusBar().addPermanentWidget(self.ext_msg)
 
     # ---- host interface for extensions --------------------------------------------------------------------
+    def show_extension_status(self, ext_id, message, ms=5000):
+        self.ext_msg.show_message(ext_id, message, ms)
+
+    def clear_extension_status(self, ext_id):
+        self.ext_msg.clear_owner(ext_id)
+
     @property
     def rec_page(self):
         return self.page
@@ -213,11 +228,12 @@ class ReviewWindow(QtWidgets.QMainWindow):
         """Extension mark_event in review: a temporary marker at the view end (nothing is written)."""
         t = self.view_end_unix() if t is None else t
         self.markers.add(t, label); self.markers.place()
-        it = QtWidgets.QListWidgetItem(f"{_fmt_time(t - self.store.t0)}   {label}   (temporary)")
+        it = QtWidgets.QListWidgetItem(f"{_fmt_time(t - self.store.t0)}   {_clock(t)}   {label}   (temporary)")
         it.setData(QtCore.Qt.UserRole, t - self.store.t0); self.ev_list.addItem(it)
         self.extensions.dispatch("on_event", t, label)
 
     def on_extension_failed(self, rec):
+        self.clear_extension_status(rec.id)
         self.statusBar().showMessage(f"Extension '{rec.name}' crashed and was disabled — see Extensions ▸ Manage", 10000)
 
     # ---- replay to extensions -----------------------------------------------------------------------------
@@ -292,7 +308,9 @@ class ReviewWindow(QtWidgets.QMainWindow):
             if hasattr(tab, "auto_t"): tab.auto_t = 0.0
         self.page.on_frame(); self.page.on_analysis(); self.page.update_texts()
         if not self.replaying: self.extensions.dispatch("on_view_changed", self.view_end_unix())
-        self.pos_label.setText(f"{_fmt_time(max(0.0, end - T))} – {_fmt_time(end)} / {_fmt_time(self.store.duration)}")
+        t0 = self.store.t0
+        self.pos_label.setText(f"{_fmt_time(max(0.0, end - T))} – {_fmt_time(end)} / {_fmt_time(self.store.duration)}"
+                               f"   ({_clock(t0 + max(0.0, end - T))} – {_clock(t0 + end)})")
 
     # ---- theme / menu ------------------------------------------------------------------------------------
     def apply_theme(self, name):

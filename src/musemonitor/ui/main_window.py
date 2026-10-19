@@ -18,14 +18,25 @@ from ..storage.session import RecordingSession
 from .context import ViewContext
 from .markers import EventMarkers
 from .pages import ConnectPage, FitPage, RecordingPage
+from .pages.recording_page import format_elapsed
 from .panels import PanelMenus
 from .plotkit import PlotRegistry
+from .tabs.base import BaseTab
 from .theme import THEMES, DEFAULT_THEME, apply_app_theme
 from .widgets.event_dialog import ask_event_label
+from .widgets.ext_status import ExtensionStatus
 from .widgets.extensions_dialog import ExtensionsDialog
 from .widgets.indicators import battery_html
 
 PAGE_CONNECT, PAGE_FIT, PAGE_RECORDING = range(3)
+RECORD_KEY = QtGui.QKeySequence("Ctrl+R")          # ⌘R on macOS
+FIT_KEY = QtGui.QKeySequence("Ctrl+T")
+RELOAD_KEY = QtGui.QKeySequence("Ctrl+Shift+R")   # edit an extension's file → ⌘⇧R runs the new code
+RECENT_KEY, RECENT_MAX = "recent_sessions", 8
+
+
+def _native(key):
+    return key.toString(QtGui.QKeySequence.NativeText)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -39,7 +50,8 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.profile = profile or athena_profile()
         self.profiles = profiles or [self.profile]
-        self.setWindowTitle(C.APP_NAME if self.profile.id == "muse_athena" else f"{C.APP_NAME} — {self.profile.name}")
+        self.base_title = C.APP_NAME if self.profile.id == "muse_athena" else f"{C.APP_NAME} — {self.profile.name}"
+        self.setWindowTitle(self.base_title)
         self.resize(1240, 860)
         self.spec = spec
         self.thread = self.worker = None
@@ -49,6 +61,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status = "Disconnected"
         self.last_qs = None; self.last_batt = None
         self.ev_writer = None
+        self._last_label = ""          # last event label, pre-filled (selected) in the Space prompt
         self.rec_path = None
         self.session = None            # RecordingSession while recording (folder + whole-session PSD)
         self._pending_new_session = False   # New session waits for the worker / scan to stop first
@@ -75,6 +88,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _timer(self, ms, *slots):
         t = QtCore.QTimer(self)
+        self._timers = getattr(self, "_timers", []) + [t]
         for s in slots: t.timeout.connect(s)
         t.start(ms); return t
 
@@ -88,33 +102,132 @@ class MainWindow(QtWidgets.QMainWindow):
         self.connect_page.connect_clicked.connect(self.connect_selected)
         self.connect_page.rescan_clicked.connect(self.start_scan)
         self.fit_page.accept_clicked.connect(lambda: self.stack.setCurrentIndex(PAGE_RECORDING))
-        self.fit_page.disconnect_clicked.connect(self.disconnect_device)
+        self.fit_page.disconnect_clicked.connect(self.user_disconnect)
         self.rec_page.fit_clicked.connect(lambda: self.stack.setCurrentIndex(PAGE_FIT))
-        self.rec_page.disconnect_clicked.connect(self.disconnect_device)
+        self.rec_page.disconnect_clicked.connect(self.user_disconnect)
         self.rec_page.record_clicked.connect(self.toggle_record)
+        self.rec_page.open_saved.connect(self.open_last_saved)
 
-        bar = self.statusBar()
-        self.theme_box = QtWidgets.QComboBox(); self.theme_box.addItems(list(THEMES))
-        self.theme_box.setFocusPolicy(QtCore.Qt.NoFocus)
-        self.theme_box.currentTextChanged.connect(self.apply_theme)
-        bar.addPermanentWidget(QtWidgets.QLabel("Theme:")); bar.addPermanentWidget(self.theme_box)
+        self.ext_msg = ExtensionStatus()                  # extension messages: their own slot, they clear themselves
+        self.ctx.plots.muted.append(self.ext_msg)
+        self.statusBar().addPermanentWidget(self.ext_msg)
 
         file_menu = self.menuBar().addMenu("File")
-        self.new_action = self._menu_action(file_menu, "New session", QtGui.QKeySequence.New, self.new_session)
+        self.new_action = self._menu_action(file_menu, "New session", QtGui.QKeySequence.New, self.user_new_session)
         self.open_action = self._menu_action(file_menu, "Open session…", QtGui.QKeySequence.Open, self.open_session_dialog)
+        self.recent_menu = file_menu.addMenu("Open recent")
+        self.recent_menu.aboutToShow.connect(self._fill_recent)
         file_menu.addSeparator()
-        self._menu_action(file_menu, "Close window", QtGui.QKeySequence.Close, self.close)
+        self.record_action = self._menu_action(file_menu, "Start recording", RECORD_KEY, self.shortcut_record)
+        self.fit_action = self._menu_action(file_menu, "Fit-test", FIT_KEY, self.shortcut_fit)
+        file_menu.addSeparator()
+        self.open_folder_action = file_menu.addAction("Open last recording folder", lambda: self.open_last_saved("folder"))
+        self.open_report_action = file_menu.addAction("Open last report", lambda: self.open_last_saved("report"))
+        file_menu.addSeparator()
+        self._menu_action(file_menu, "Close window", QtGui.QKeySequence.Close, self.user_close)
+        self.rec_page.record_btn.setToolTip(f"Start / stop recording ({_native(RECORD_KEY)})")
+        self.rec_page.fit_btn.setToolTip(f"Back to the fit-test ({_native(FIT_KEY)})")
+
+        view_menu = self.menuBar().addMenu("View")             # theme: in a menu, reachable from the keyboard
+        theme_menu = view_menu.addMenu("Theme")
+        self.theme_group = QtGui.QActionGroup(self); self.theme_actions = {}
+        for name in THEMES:
+            act = theme_menu.addAction(name); act.setCheckable(True); self.theme_group.addAction(act)
+            act.triggered.connect(lambda _=False, n=name: self.apply_theme(n))
+            self.theme_actions[name] = act
         self.panels = PanelMenus(self, self.rec_page, self.ctx.settings, kind="live")     # Analysis, HCI/BCI
+        self.last_saved = None                                 # folder of the last recording saved in this window
+        self._update_saved_actions()
 
         self.ext_menu = self.menuBar().addMenu("Extensions")
         self.ext_menu_sep = self.ext_menu.addSeparator()       # extension actions are inserted above
         self.ext_menu.addAction("Check for new extensions", self.check_new_extensions)
+        self.reload_action = self._menu_action(self.ext_menu, "Reload changed extensions", RELOAD_KEY,
+                                               self.reload_changed_extensions)
         self.ext_menu.addAction("Manage extensions…", self.show_extensions)
 
     @staticmethod
     def _menu_action(menu, text, key, slot):
         act = menu.addAction(text); act.setShortcut(key); act.triggered.connect(slot)
         return act
+
+    # ======================= Confirmations (user entry points only) ==============
+    # Buttons, menu actions and the window's close button ask before stopping a recording. new_session(),
+    # disconnect_device() and close() themselves never ask, so code (tests, extensions) keeps its behaviour.
+    def confirm_stop_recording(self, action):
+        """True if it is fine to go on: not recording, or the user agreed to stop the recording."""
+        if not self.recording: return True
+        sec = self.rec_page.recording_elapsed() or 0
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Warning, "Recording in progress",
+                                    f"Recording for {format_elapsed(sec)}. {action} will stop it.", parent=self)
+        box.setInformativeText("What has been recorded so far is saved and its report is written.")
+        stop = box.addButton("Stop recording", QtWidgets.QMessageBox.DestructiveRole)
+        keep = box.addButton("Keep recording", QtWidgets.QMessageBox.RejectRole)
+        box.setDefaultButton(keep); box.setEscapeButton(keep)        # Return / Esc never stop a recording
+        box.exec()
+        return box.clickedButton() is stop
+
+    def user_disconnect(self):
+        if self.confirm_stop_recording("Disconnecting"): self.disconnect_device()
+
+    def user_new_session(self):
+        if self.confirm_stop_recording("A new session"): self.new_session()
+
+    def user_close(self):
+        if self.confirm_stop_recording("Closing the window"):
+            self._close_confirmed = True; self.close()
+
+    # ======================= Keyboard shortcuts (⌘R record, ⌘T fit-test) =========
+    def shortcut_record(self):
+        if not self.rec_page.record_btn.isEnabled():
+            self.statusBar().showMessage("Connect a device and wait for the stream before recording", 5000); return
+        if not self.recording: self.stack.setCurrentIndex(PAGE_RECORDING)
+        self.toggle_record()
+
+    def shortcut_fit(self):
+        if self.streaming: self.stack.setCurrentIndex(PAGE_FIT)
+
+    # ======================= Extension messages ==================================
+    def show_extension_status(self, ext_id, message, ms=5000):
+        """app.show_status() of an extension → its own status-bar slot (see ExtensionStatus)."""
+        self.ext_msg.show_message(ext_id, message, ms)
+
+    def clear_extension_status(self, ext_id):
+        self.ext_msg.clear_owner(ext_id)
+
+    # ======================= Saved recordings: recent / open folder / report =====
+    def _remember_session(self, folder):
+        self.last_saved = Path(folder)
+        recent = [str(self.last_saved)] + [p for p in self.recent_sessions() if p != str(self.last_saved)]
+        self.ctx.settings.setValue(RECENT_KEY, recent[:RECENT_MAX])
+        self._update_saved_actions()
+
+    def recent_sessions(self):
+        v = self.ctx.settings.value(RECENT_KEY, [])
+        return [v] if isinstance(v, str) else list(v or [])
+
+    def _fill_recent(self):
+        self.recent_menu.clear()
+        paths = [p for p in self.recent_sessions() if Path(p).is_dir()]
+        for p in paths:
+            self.recent_menu.addAction(Path(p).name, lambda p=p: self.open_session(p))
+        if not paths: self.recent_menu.addAction("No recent recordings").setEnabled(False)
+
+    def _update_saved_actions(self):
+        folder = self.last_saved
+        report = folder / "report.html" if folder else None
+        self.open_folder_action.setEnabled(bool(folder and folder.is_dir()))
+        self.open_report_action.setEnabled(bool(report and report.exists()))
+        self.rec_page.set_saved(folder.name if folder else None, has_report=bool(report and report.exists()))
+
+    def open_last_saved(self, what):
+        if not self.last_saved: return
+        target = self.last_saved / "report.html" if what == "report" else self.last_saved
+        if target.exists(): self.open_path(target)
+
+    @staticmethod
+    def open_path(path):
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
     # ======================= File: new / open session ==========================
     def new_session(self):
@@ -166,10 +279,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if changed: self.panels.announce()
         return changed
 
+    def reload_changed_extensions(self):
+        """Extensions ▸ Reload changed extensions: re-import file extensions edited since they were loaded."""
+        done, msg = self.extensions.reload_changed()
+        self.statusBar().showMessage(msg, 10000)
+        return done
+
     def show_extensions(self):
         ExtensionsDialog(self.extensions, self).exec()
 
     def on_extension_failed(self, rec):
+        self.clear_extension_status(rec.id)
         self.statusBar().showMessage(f"Extension '{rec.name}' crashed and was disabled — see Extensions ▸ Manage", 10000)
 
     # ======================= Theme =============================================
@@ -177,8 +297,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def apply_theme(self, name):
         if name not in THEMES: name = DEFAULT_THEME
         th = self.ctx.th = THEMES[name]
-        if self.theme_box.currentText() != name:
-            self.theme_box.blockSignals(True); self.theme_box.setCurrentText(name); self.theme_box.blockSignals(False)
+        self.theme_actions[name].setChecked(True)
         apply_app_theme(th)
         self.ctx.plots.apply_theme(th)
         self.fit_page.apply_theme(th); self.rec_page.apply_theme(th)
@@ -205,6 +324,14 @@ class MainWindow(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def update_texts(self):
         self.rec_page.update_texts()
+        self._update_title()
+
+    def _update_title(self):
+        """'● REC 3:07 — Muse Monitor' while recording: visible in the Dock/taskbar and from any page."""
+        sec = self.rec_page.recording_elapsed()
+        title = self.base_title if sec is None else f"● REC {format_elapsed(sec)} — {self.base_title}"
+        if self.windowTitle() != title: self.setWindowTitle(title)
+        self.record_action.setText("Start recording" if sec is None else "Stop recording")
 
     @QtCore.Slot()
     def update_quality(self):
@@ -224,25 +351,44 @@ class MainWindow(QtWidgets.QMainWindow):
         html = battery_html(self.last_batt, self.ctx.th)
         self.rec_page.set_battery_html(html); self.fit_page.set_battery_html(html)
 
-    # ======================= Event markers (Space) =============================
+    # ======================= Event markers (Space, 1–9) ========================
+    QUICK_KEYS = {getattr(QtCore.Qt, f"Key_{d}"): str(d) for d in range(1, 10)}    # "0" is the start-of-recording event
+
     def eventFilter(self, obj, ev):
-        if (ev.type() == QtCore.QEvent.KeyPress and ev.key() == QtCore.Qt.Key_Space and not ev.isAutoRepeat()
+        if (ev.type() == QtCore.QEvent.KeyPress and not ev.isAutoRepeat()
+                and ev.key() in (QtCore.Qt.Key_Space, *self.QUICK_KEYS)
                 and self.stack.currentIndex() == PAGE_RECORDING and self.isActiveWindow()
                 and QtWidgets.QApplication.activeModalWidget() is None):
-            fw = QtWidgets.QApplication.focusWidget()
-            if not (isinstance(fw, (QtWidgets.QLineEdit, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit))
-                    and not isinstance(fw.parent(), QtWidgets.QAbstractSpinBox)):
-                self.mark_event(); return True
+            # the widget the key is delivered to (first seen on its QWindow → the focus widget)
+            fw = obj if isinstance(obj, QtWidgets.QWidget) else QtWidgets.QApplication.focusWidget()
+            if self._tab_claims_key(fw, ev.key()): return super().eventFilter(obj, ev)
+            typing =isinstance(fw, (QtWidgets.QLineEdit, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit))
+            in_spin = isinstance(fw, QtWidgets.QAbstractSpinBox) or (fw is not None and isinstance(fw.parent(), QtWidgets.QAbstractSpinBox))
+            if ev.key() == QtCore.Qt.Key_Space:
+                if not (typing and not in_spin):           # a spin box ignores Space → still marks
+                    self.mark_event(); return True
+            elif not (typing or in_spin) and not (ev.modifiers() & ~QtCore.Qt.KeypadModifier):
+                self.add_event(self.QUICK_KEYS[ev.key()]); return True     # digits typed into a field stay there
         return super().eventFilter(obj, ev)
+
+    @staticmethod
+    def _tab_claims_key(widget, key):
+        """True if ``widget`` sits in a tab (BaseTab) that claims this reserved key (wants_keys / wants_all_keys)."""
+        w = widget
+        while w is not None:
+            if isinstance(w, BaseTab): return bool(w.wants_all_keys or key in w.wants_keys)
+            w = w.parentWidget()
+        return False
 
     def mark_event(self):
         t = time.time()                                  # time Space was pressed, not when Done was clicked
-        label = ask_event_label(self, t)
+        label = ask_event_label(self, t, last=self._last_label)
         if label: self.add_event(label, t)
 
     def add_event(self, label, t=None):
         """Add an event (Space key or extension): marker + _events.csv + on_event hook."""
         t = time.time() if t is None else t
+        if label != C.START_EVENT_LABEL: self._last_label = label       # pre-filled the next time Space is pressed
         self.markers.add(t, label)
         if self.ev_writer: self.ev_writer.write(t, label)
         if self.session: self.session.add_event(t, label)
@@ -385,7 +531,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.connected = self.streaming = self.recording = False
         if was_recording: self.extensions.dispatch("on_recording_stopped")
         self.extensions.dispatch("on_disconnected")
-        self.rec_page.set_recording(False); self.rec_page.set_record_enabled(False)
+        self.rec_page.set_recording(False); self.rec_page.set_record_enabled(False); self._update_title()
         self._close_events_file()
         report = self._finish_session()                 # connection lost while recording → still write the report
         self.rec_page.set_disconnect_enabled(True); self.fit_page.set_disconnect_enabled(True)
@@ -408,7 +554,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.recording: self.stop_recording(); return
         if not self.worker: return
         try:
-            self.session = RecordingSession(self.spec, device=self.device_name, profile_id=self.profile.id)
+            self.session = RecordingSession(self.spec, device=self.device_name, profile_id=self.profile.id,
+                                            fit_test=self.fit_page.fit_test_for_recording())
         except OSError as e:
             self.set_status(f"Cannot create session folder: {e}"); self.session = None; return
         path = str(self.session.eeg_path)
@@ -418,7 +565,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.set_status(f"Cannot open events file: {e}"); self.ev_writer = None
         self.worker.start_recording(path)
         self.recording = True; self.rec_path = path
-        self.rec_page.set_recording(True)
+        self.rec_page.set_recording(True); self._update_title()
         self.extensions.dispatch("on_recording_started", path)
         self.add_event(C.START_EVENT_LABEL)
         self.set_status(f"Recording → {self.session.folder.parent.name}/{self.session.folder.name}/")
@@ -428,7 +575,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._close_events_file()
         was_recording, self.recording = self.recording, False
         if was_recording: self.extensions.dispatch("on_recording_stopped")    # extensions close their files before the report
-        self.rec_page.set_recording(False)
+        self.rec_page.set_recording(False); self._update_title()
         report = self._finish_session()
         if report: self.set_status(f"Saved {report.parent.parent.name}/{report.parent.name}/ — report.html")
         elif self.streaming and not self.report_error: self.set_status(f"Streaming EEG • {self.spec.eeg.fs} Hz")
@@ -444,8 +591,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self.report_error = f"Recording saved to {sess.folder.name}/ but report failed: {type(e).__name__}: {e}"
             self.set_status(self.report_error)
             return None
+        finally:
+            self._remember_session(sess.folder)         # data is on disk either way → Open recent / Open folder
 
     def closeEvent(self, event):
+        # The window's own close button (a spontaneous event) asks first while recording; close() from code does not
+        confirmed, self._close_confirmed = getattr(self, "_close_confirmed", False), False
+        if (event.spontaneous() and not confirmed and not self.closing
+                and not self.confirm_stop_recording("Closing the window")):
+            event.ignore(); return
         # Do not close while the worker is still running (prepare/release_session may take > 2 s) → avoids
         # "QThread: Destroyed while thread is still running". Wait for stopped, then close() automatically.
         if self.scan_thread and self.scan_thread.isRunning():
@@ -459,4 +613,5 @@ class MainWindow(QtWidgets.QMainWindow):
         self._close_events_file()
         self.extensions.shutdown()
         QtWidgets.QApplication.instance().removeEventFilter(self)       # the Space filter is app-wide
-        event.accept()
+        for t in getattr(self, "_timers", []): t.stop()                  # a closed window (review windows may stay
+        event.accept()                                                   # open) must not keep redrawing

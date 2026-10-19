@@ -57,8 +57,10 @@ def face_row(yaw=0.0, pitch=0.55, roll_deg=0.0, score=0.95, width=80):
 
 def test_facing_from_landmarks():
     assert cam.facing_from_face(face_row(), 320)["facing"]
-    assert cam.facing_from_face(face_row(yaw=0.25), 320)["reason"] == "turned left/right"
-    assert cam.facing_from_face(face_row(pitch=0.85), 320)["reason"] == "looking up/down"
+    assert cam.facing_from_face(face_row(yaw=0.25), 320)["reason"] == "turned left"     # nose right of centre
+    assert cam.facing_from_face(face_row(yaw=-0.25), 320)["reason"] == "turned right"
+    assert cam.facing_from_face(face_row(pitch=0.85), 320)["reason"] == "looking down"  # nose near the mouth
+    assert cam.facing_from_face(face_row(pitch=0.25), 320)["reason"] == "looking up"
     assert cam.facing_from_face(face_row(roll_deg=20), 320)["reason"] == "head tilted"
     assert cam.facing_from_face(face_row(width=20), 320)["reason"] == "too far from camera"
     assert cam.facing_from_face(face_row(score=0.5), 320)["reason"] == "face unclear"
@@ -186,3 +188,131 @@ def test_analyse_frame_on_rendered_head(qapp):
     det = cv2.FaceDetectorYN.create(str(cam.MODEL), "", (w, h), 0.7)
     res, preview = cam.analyse_frame(det, rgb[:, :, ::-1].copy())
     assert res["face"] and res["facing"] and preview.shape == (h, w, 3)
+
+
+# ---- H1–H5, H7–H12 (User_Analysis UX review) ---------------------------------------------------------
+def _still(n=52):
+    x = np.zeros((6, n)); x[2] = -1.0                 # gravity on z, no rotation
+    return x
+
+
+def _turn(n, axis, dps):
+    x = _still(n); x[3 + axis] = dps
+    return x
+
+
+def test_steps_countdown_sound_and_progress(plus_tab):
+    tab, _, w = plus_tab
+    b = tab.step_buttons
+    assert not any(x.isEnabled() for x in b.values()) and "Connect Athena" in b["neutral"].toolTip()
+    tab.ext.on_imu(_still(), 1.0); tab.refresh_steps()
+    assert b["neutral"].isEnabled() and not b["left"].isEnabled() and b["neutral"].font().bold()
+    tab.begin_capture("neutral")
+    assert tab.pending == "neutral" and "GO in 3" in tab.calibration_info.text() and b["neutral"].text().startswith("… ")
+    for _ in range(3): tab._countdown_tick()
+    assert tab.capture_kind == "neutral" and tab.ext.cues.played[-1] == "go"            # H1
+    assert "GO — step 1: hold your head still" in tab.calibration_info.text()          # H4: no "neutral"
+    tab.collect(_still(26))
+    frac, left = tab.capture_progress()
+    assert frac == pytest.approx(0.5) and left == pytest.approx(0.5)
+    tab.on_frame(); assert not tab.progress.isHidden() and "Hold still · 0.5 s left" in tab.progress.format()
+    tab.collect(_still(26))
+    assert tab.ext.cues.played[-1] == "done" and b["neutral"].text().startswith("✓ ") and b["left"].isEnabled()
+    tab.begin_capture("left"); tab._start_capture("left", tab.capture_generation)
+    tab.collect(_still(80))                                                           # did not turn
+    assert tab.ext.cues.played[-1] == "retry" and b["left"].text().startswith("✕ ")
+    w.connected = False
+
+
+def test_calibrate_all_runs_three_steps(plus_tab, monkeypatch):
+    tab, _, w = plus_tab
+    later = []
+    monkeypatch.setattr(tab, "schedule", lambda ms, fn: later.append(fn))
+    tab.ext.on_imu(_still(), 1.0); tab.refresh_steps()
+    tab.all_btn.click()
+    assert tab.pending == "neutral" and tab.queue == ["left", "up"] and tab.all_btn.text() == "■ Cancel"
+    tab._start_capture("neutral", tab.capture_generation); tab.collect(_still(52))
+    later.pop()()
+    assert tab.pending == "left"
+    tab._start_capture("left", tab.capture_generation); tab.collect(_turn(78, 1, 40.0))   # turn about one axis
+    later.pop()()
+    assert tab.pending == "up"
+    tab._start_capture("up", tab.capture_generation); tab.collect(_turn(78, 0, 40.0))     # another axis
+    assert tab.calibrated and tab.step_buttons["up"].text().startswith("✓ ") and not tab.busy()
+    assert "Recenter (R)" in tab.calibration_info.text()
+
+
+def test_keys_run_steps_and_r_recenters(plus_tab, monkeypatch):
+    from PySide6 import QtCore, QtTest
+    from musemonitor.ui import main_window as mw
+    tab, _, w = plus_tab
+    monkeypatch.setattr(mw.MainWindow, "isActiveWindow", lambda self: True)
+    w.show(); w.stack.setCurrentIndex(mw.PAGE_RECORDING)
+    w.panels.set_shown(w.panels.find(tab.title), True, select=True)
+    started, centred = [], []
+    monkeypatch.setattr(tab, "begin_capture", lambda kind: started.append(kind))
+    monkeypatch.setattr(tab, "recenter", lambda: centred.append(1))
+    tab.setFocus()
+    for key in (QtCore.Qt.Key_1, QtCore.Qt.Key_3, QtCore.Qt.Key_R):
+        QtTest.QTest.keyClick(tab, key)
+    assert started == ["neutral", "up"] and centred == [1] and len(w.markers) == 0      # H2: no quick events
+    QtTest.QTest.keyClick(tab, QtCore.Qt.Key_5)
+    assert [e[1] for e in w.markers.events] == ["5"]                                   # unclaimed digit: event
+
+
+def test_status_words_and_recenter_age(plus_tab, monkeypatch):
+    import sys
+    tab, _, w = plus_tab
+    tab.update_texts()
+    assert tab.status.text() == "<b>IMU:</b> waiting for Athena…"
+    tab.ext.on_imu(_still(), 1.0); tab.update_texts()
+    assert tab.status.text() == "<b>IMU:</b> stable" and "52 samples at 52 Hz" in tab.status.toolTip()
+    assert tab.canvas.recenter_text() == "not recentered yet"
+    tab.recenter()
+    assert tab.canvas.recentered[1] == "manual" and tab.canvas.recenter_text() == "recentered just now (manual)"
+    mod = sys.modules[type(tab).__module__]
+    t0 = tab.canvas.recentered[0]
+    assert tab.canvas.recenter_text(t0 + 150) == "recentered 2 min ago (manual)"
+    assert tab.canvas.flash_until > t0                                                 # "Recentered" label shown
+    assert not tab.canvas.grab().toImage().isNull()
+
+
+def test_mirror_view_reflects_the_model_not_the_angles(plus_tab):
+    tab, _, w = plus_tab
+    t = tab.ext.tracker
+    t.q = np.array((math.cos(math.radians(10)), 0, math.sin(math.radians(10)), 0))      # turned left 20°
+    mod = __import__("sys").modules[type(tab).__module__]
+    assert round(mod.pose_angles(t.q)[0]) == 20
+    face = lambda: (mod.MIRROR @ mod._rotation_matrix(t.q) @ mod.MIRROR if tab.canvas.mirror
+                    else mod._rotation_matrix(t.q))[:, 2]
+    assert tab.mirror.isChecked() and face()[0] < 0                                    # mirror: screen left
+    tab.mirror.setChecked(False)
+    assert face()[0] > 0 and tab.ext.app.setting("mirror_view") in (False, "false")    # facing you: screen right
+    tab.update_texts()
+    assert "turned 20° left" in tab.canvas.accessibleDescription()                     # angles = your head
+    assert "roll + = tilted to the left" in tab.note.text()
+
+
+def test_camera_on_mark_follows_theme_and_auto_recenter_hidden_when_off(plus_tab):
+    from musemonitor.ui.theme import THEMES, contrast_ratio
+    tab, _, w = plus_tab
+    for name in ("Light", "Dark"):
+        w.apply_theme(name)
+        colour = THEMES[name]["q"]["Bad"]
+        assert colour in tab.cam_live.styleSheet()
+        assert contrast_ratio(colour, THEMES[name]["base"]) >= 4.5
+    assert tab.cam_auto.isHidden()                                                      # camera off
+    tab._camera_running(True)
+    assert not tab.cam_auto.isHidden() and tab.cam_auto.isEnabled()
+    tab.stop_camera("Camera off.")
+    assert tab.cam_auto.isHidden()
+
+
+def test_accessible_names(plus_tab):
+    tab, _, w = plus_tab
+    tab.ext.on_imu(_still(), 1.0); tab.update_texts(); tab.refresh_steps()
+    assert tab.canvas.accessibleName() == "3D head pose" and "not recentered yet" in tab.canvas.accessibleDescription()
+    assert tab.step_buttons["neutral"].accessibleName() == "Step 1, Hold still: not done"
+    assert tab.recenter_button.accessibleName() == "Recenter head"
+    assert tab.cam_preview.accessibleName() == "Camera preview (mirrored)"
+    assert tab.status.accessibleName() == "IMU: stable"

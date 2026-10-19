@@ -233,6 +233,8 @@ class ExtensionContext:
         if self._menu is not None:
             self._host.ext_menu.removeAction(self._menu.menuAction()); self._menu.deleteLater(); self._menu = None
         self._host.remove_extension_tabs(self.id)
+        clear = getattr(self._host, "clear_extension_status", None)
+        if clear is not None: clear(self.id)                 # its last message goes with it
 
     # ---- actions ------------------------------------------------------------
     def mark_event(self, label, t=None):
@@ -241,7 +243,14 @@ class ExtensionContext:
         self._host.add_event(label, t)
 
     def show_status(self, message, ms=5000):
-        self._host.statusBar().showMessage(f"[{self.id}] {message}", ms)
+        """Short message in the status bar, in a slot of its own (apart from the app's messages), shown as
+        plain text on one line (line breaks become " · ", long text is cut with the full text in the tooltip).
+        It clears itself after ``ms`` milliseconds, at most 15 s; ``ms <= 0`` means 15 s, not "forever".
+        A newer message from any extension replaces it; ``show_status("")`` clears your own message.
+        Call it from the GUI thread (every hook already runs there)."""
+        show = getattr(self._host, "show_extension_status", None)
+        if show is not None: show(self.id, message, ms)
+        else: self._host.statusBar().showMessage(f"[{self.id}] {message}", ms)     # hosts without the slot
 
     # ---- private storage ----------------------------------------------------------
     def setting(self, key, default=None, type=None):

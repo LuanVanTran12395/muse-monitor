@@ -1,6 +1,6 @@
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ..theme import THEMES, DEFAULT_THEME
+from ..theme import THEMES, DEFAULT_THEME, text_on
 
 
 class HeadWidget(QtWidgets.QWidget):
@@ -14,9 +14,11 @@ class HeadWidget(QtWidgets.QWidget):
         self.q = {n: "—" for n in channel_names}
         self.colors = THEMES[DEFAULT_THEME]["q"]
         self.setMinimumSize(320, 340)
+        self.setAccessibleName("Electrode contact map")
 
     def set_quality(self, q):
         self.q = q; self.update()
+        self.setAccessibleDescription("Contact: " + ", ".join(f"{n} {lvl}" for n, lvl in q.items()))
 
     def set_colors(self, colors):
         self.colors = colors; self.update()
@@ -35,14 +37,23 @@ class HeadWidget(QtWidgets.QWidget):
             p.drawEllipse(QtCore.QPointF(cx + sx * r * 1.04, cy), r * .1, r * .22)
         er = r * 0.17
         f = p.font(); f.setBold(True); f.setPointSizeF(max(9, er * 0.42)); p.setFont(f)
+        fm = QtGui.QFontMetricsF(f)
+        window = self.palette().color(QtGui.QPalette.Window)
         for name, (ux, uy) in self.pos.items():
             if name not in self.q: continue
-            c = QtGui.QColor(self.colors[self.q[name]])
+            fill = self.colors[self.q[name]]
+            c = QtGui.QColor(fill)
             x, y = cx + ux * r, cy + uy * r * 1.1
             p.setPen(QtGui.QPen(c.darker(140), 2)); p.setBrush(c)
             p.drawEllipse(QtCore.QPointF(x, y), er, er)
-            p.setPen(QtGui.QColor("white"))
+            p.setPen(QtGui.QColor(text_on(fill)))                  # white or dark, whichever reads on this fill
             p.drawText(QtCore.QRectF(x - er, y - er, 2 * er, 2 * er), QtCore.Qt.AlignCenter, name)
+            # level below the electrode on a window-coloured pill, so the head outline does not run through it
+            text = self.q[name]
+            w, h = fm.horizontalAdvance(text) + er * 0.6, fm.height() + er * 0.2
+            pill = QtCore.QRectF(x - w / 2, y + er * 1.12, w, h)
+            p.setPen(QtCore.Qt.NoPen); p.setBrush(window)
+            p.drawRoundedRect(pill, h / 2, h / 2)
             p.setPen(c)
-            p.drawText(QtCore.QRectF(x - er * 2, y + er, er * 4, er * 1.3), QtCore.Qt.AlignCenter, self.q[name])
+            p.drawText(pill, QtCore.Qt.AlignCenter, text)
         p.end()
