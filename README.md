@@ -156,6 +156,7 @@ Bundled extensions:
 | `eye_interaction` | HCI/BCI ▸ Eyes | avatar + plots: blinks (AF7/AF8), left/right glances (AF7 − AF8, calibrated), eye closure from TP9/TP10 alpha | Athena EEG | — |
 | `head_motion`, `head_motion_plus` | HCI/BCI ▸ Motion | 3D head pose from the IMU; *plus*: guided axis calibration and an optional camera "facing the screen" reference (off by default, asks permission, frames never saved) | Athena IMU (+ `opencv-python-headless` for the camera) | — |
 | `lsl_outlet` | Extensions ▸ LSL Outlet | streams live EEG, your event markers and a timing-quality stream to Lab Streaming Layer (LabRecorder / XDF); off until *Start LSL streams*; timestamps are host-receive based and smoothed, not calibrated against a stimulus — see its README | Athena EEG + `pip install -e .[lsl]` | — |
+| `p300_bci` | Analysis ▸ Other | **experimental, stage A:** 3×3 P300 stimulus window (5 command cells), session recording with a timing report (measured / estimated / not measured), epochs at the stimulus onset and target / non-target ERP; offline `check` / `timing` / `erp` tools; no classifier or online control yet — see its README | Athena EEG (any device with ≥ 2 EEG channels) | — |
 
 **Review** = also runs in review windows (File ▸ Open session): the recording is replayed to the
 extension and its tab follows the scrollbar (extension API 2, `supports_review`).
