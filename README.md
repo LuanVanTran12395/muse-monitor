@@ -12,8 +12,25 @@ Built with BrainFlow, bleak, PySide6 and pyqtgraph.
 - EEG with an electrode contact-quality fit-test, filters, a live spectrogram and a whole-session PSD report
 - PPG → heart rate → HRV (RMSSD, SDNN, SDHR, pRR50, pRR20); fNIRS ΔHbO / ΔHbR (exploratory)
 - IMU (Athena), light/dark theme, one time range shared by every time-domain plot
-- Manual event markers (Space), automatic session folders in `data/`
+- Manual event markers (Space), automatic session folders in `data/`, review windows for past recordings
 - Extensions: add tabs and analyses without touching the app (blink/glance/eye-closure, 3D head pose, band power…)
+- Research tools: Lab Streaming Layer outlet, a P300 stimulus / ERP pipeline (experimental)
+- Head and eye interaction demos: a food-ordering kiosk and a Rubik's cube game controlled by head pointing, nods,
+  tilts, blinks and jaw clenches, each with a keyboard / mouse fallback
+
+## What is in the project
+
+| Part | What it is | Where |
+|---|---|---|
+| **The monitor** | Connect, fit-test, record and review: EEG, optics (PPG / fNIRS), IMU, events, timing, reports | `src/musemonitor/` (see *Development*) |
+| **Analysis extensions** | Band power, artifact log (blink / EMG / amplitude / flat / motion marks) | `extensions/band_power`, `artifact_log` |
+| **Interaction estimators** | Eyes: blinks, glances, eye closure. Head: 3D pose, guided calibration, camera "facing the screen" reference | `extensions/eye_interaction`, `head_motion`, `head_motion_plus` |
+| **Research** | LSL outlet for LabRecorder / XDF; P300 stimulus window, timing report and ERP (stage A, no classifier yet) | `extensions/lsl_outlet`, `p300_bci`, `tools/` |
+| **Demos and games** | *Muse Bistro* (order food with head and eyes); *Muse Cube* (solve a Rubik's cube with the head, blinks and jaw clench). Both reuse the interaction estimators read-only | `extensions/food_order`, `muse_cube` |
+| **Docs and tests** | Extension guide, LSL report, offscreen pytest suite on synthetic signals | `docs/`, `tests/` |
+
+Every reading is a research estimate (see the warning above). The interaction demos were tested offscreen and on
+synthetic signals; their thresholds come from short sessions with one person (see *Known limitations*).
 
 ## Screenshots
 
@@ -79,6 +96,8 @@ connection.
 6. **Menu bar**: `File` · `View` · `Analysis` · `HCI/BCI` · `Extensions`
    - **Analysis** — extension panels grouped as EEG, Heart & optics, Data quality, Other.
    - **HCI/BCI** — interaction panels: Eyes (blink / glance / eye closure), Motion (3D head).
+   - The P300 window, Muse Bistro and Muse Cube are under **Analysis ▸ Other**; each opens its own window from
+     its panel.
    - Tick a panel to show it as a tab, untick to hide it; the choice is remembered. Panels start hidden.
    - **Extensions** — each extension's actions in its own submenu, plus Check for new / Reload changed
      extensions (⌘⇧R, after editing an extension's file; not while recording) / Manage. Extension messages
@@ -158,7 +177,7 @@ Bundled extensions:
 | `lsl_outlet` | Extensions ▸ LSL Outlet | streams live EEG, your event markers and a timing-quality stream to Lab Streaming Layer (LabRecorder / XDF); off until *Start LSL streams*; timestamps are host-receive based and smoothed, not calibrated against a stimulus — see its README | Athena EEG + `pip install -e .[lsl]` | — |
 | `p300_bci` | Analysis ▸ Other | **experimental, stage A:** 3×3 P300 stimulus window (5 command cells), session recording with a timing report (measured / estimated / not measured), epochs at the stimulus onset and target / non-target ERP; offline `check` / `timing` / `erp` tools; no classifier or online control yet — see its README | Athena EEG (any device with ≥ 2 EEG channels) | — |
 | `food_order` | Analysis ▸ Other | **demo:** *Muse Bistro*, a food-ordering window driven by head pointing and nod-to-select (dwell optional), full turns, shake, look-up, and eye shortcuts (double blink → item details, eyes closed → quick cart; TP9/TP10 by default), built on the head_motion_plus and eye_interaction estimators (reused read-only); sign-in, size / toppings / quantity, cart, simulated checkout; VI / EN; camera recenter and demo-video recording; keyboard and mouse fallback; optional labelled gesture capture — see its README | Athena EEG + IMU | — |
-| `muse_cube` | Analysis ▸ Other | **game (R1–R2):** Rubik's cube (2×2 default, 3×3) in its own window, Glass (see-through, default) and Classic styles; head control on Athena — point a face, tilt to turn it, full turn / look-up to turn the cube, shake to undo — with a 15 s calibration and a tilt test; keyboard / mouse fallback; the view is separate from the model so undo and the way-back hint stay right; reuses head_motion_plus and food_order gestures read-only through an adapter — see its README | Athena IMU (or none: keyboard) | — |
+| `muse_cube` | Analysis ▸ Other | **game:** *Muse Cube*, a Rubik's cube (2×2 default, 3×3) in its own window — Glass (see-through) and Classic styles, a 2D panel (three ring clusters or a cross net), every layer selectable and clearly lit; head control on Athena — point a face, nod for the next layer, tilt to turn it (kept only if a tilt test passes), full turn / look-up to turn the cube, shake to undo; double blink ↻ and jaw clench ↺ (only with a layer selected); calibration with animated pictograms; live EOG / EMG with thresholds and filters by hand; optional camera recenter that shows a 3D head, never the image; tutorial, way-back hint, random scramble; keyboard / mouse fallback; reuses head_motion_plus, eye_interaction and food_order gestures read-only through an adapter — see its README | Athena EEG + IMU (or none: keyboard) | — |
 
 **Review** = also runs in review windows (File ▸ Open session): the recording is replayed to the
 extension and its tab follows the scrollbar (extension API 2, `supports_review`).
@@ -264,9 +283,9 @@ project: [CLAUDE.md](CLAUDE.md).
 | Path | Role |
 |---|---|
 | `extensions/` | Bundled extensions (table above). |
-| `tools/` | `capture_athena.py` (raw BrainFlow fixture for golden tests), `organize_data.py` (old flat recordings → session folders), `make_screenshots.py` (README images from synthetic data). |
+| `tools/` | `capture_athena.py` (raw BrainFlow fixture for golden tests), `organize_data.py` (old flat recordings → session folders), `make_screenshots.py` (README images from synthetic data), `lsl_check.py` / `xdf_check.py` (check the LSL streams live / in a LabRecorder XDF file), `timeline_report.py` (timestamp-smoothing measurements), `key_clock_probe.py` (key-press timing on the real machine). |
 | `tests/` | pytest suite on deterministic synthetic signals; runs offscreen, no headset needed. |
-| `docs/` | [EXTENSIONS.md](docs/EXTENSIONS.md) (extension guide) and screenshots. |
+| `docs/` | [EXTENSIONS.md](docs/EXTENSIONS.md) (extension guide), [LSL_ATHENA_IMPLEMENTATION_REPORT.md](docs/LSL_ATHENA_IMPLEMENTATION_REPORT.md), the LSL prototype page, and screenshots. |
 | `data/` | Local recordings (git-ignored). |
 
 ### Tests
@@ -310,6 +329,9 @@ loss; BrainFlow's rule is still being verified). HRV uses sample counts and the 
 ## Known limitations
 
 - Contact quality is estimated from the signal, not measured impedance.
+- The interaction demos (Muse Bistro, Muse Cube) and the P300 extension are prototypes. Their gesture thresholds come
+  from short sessions with one person. Head tilt, blink and jaw-clench control are not yet validated with users, and
+  P300 has no classifier.
 - fNIRS ΔHbO/ΔHbR are exploratory (unverified optical-channel wavelength mapping on Athena).
 - Athena `package_num` semantics are not yet understood (large `seq?` counts); a raw capture with
   `tools/capture_athena.py` is needed.
