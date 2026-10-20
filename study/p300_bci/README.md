@@ -129,10 +129,10 @@ it. Self-contained HTML (prints to PDF), in the instruction language chosen in t
 ## Offline tools
 
 ```bash
-~/.venvs/musemonitor/bin/python extensions/p300_bci/offline.py check  <session>   # completeness, row counts, continuity
-~/.venvs/musemonitor/bin/python extensions/p300_bci/offline.py timing <session>   # the timing report, by group
-~/.venvs/musemonitor/bin/python extensions/p300_bci/offline.py report <session> --lang vi   # (re)write report.html
-~/.venvs/musemonitor/bin/python extensions/p300_bci/offline.py erp    <session> --preset default --csv erp.csv
+~/.venvs/musemonitor/bin/python study/p300_bci/offline.py check  <session>   # completeness, row counts, continuity
+~/.venvs/musemonitor/bin/python study/p300_bci/offline.py timing <session>   # the timing report, by group
+~/.venvs/musemonitor/bin/python study/p300_bci/offline.py report <session> --lang vi   # (re)write report.html
+~/.venvs/musemonitor/bin/python study/p300_bci/offline.py erp    <session> --preset default --csv erp.csv
 #   --timeline fit|online   (default fit: whole-session regression)   --channels AF7,AF8   (other channels)
 ```
 

@@ -733,7 +733,8 @@ class P300BCI(Extension):
             except Exception as e:
                 res = dict(error=f"{type(e).__name__}: {e}")
             self._bridge.analysed.emit(res)
-        threading.Thread(target=work, name="p300-analysis", daemon=True).start()
+        self.analysis_thread = threading.Thread(target=work, name="p300-analysis", daemon=True)
+        self.analysis_thread.start()
 
     def _analysed(self, res):
         self.last_report = res.get("report")

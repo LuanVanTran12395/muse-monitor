@@ -117,7 +117,7 @@ CI dùng `pylsl` giả để tránh phụ thuộc khám phá stream qua mạng. 
 
 ## 7. Quyết định, việc hoãn và trạng thái hiện tại
 
-**Đã thống nhất về kỹ thuật:** extension live cho Athena; API v3 tương thích ngược; timestamp raw chỉ trong hook/CSV, timeline LSL làm đều có trạng thái; vector timestamp cho `push_chunk`; marker theo thời điểm bấm; optics `Optical/raw`; CI dùng dữ liệu tổng hợp. `CLAUDE.md` yêu cầu proposal và sự cho phép của người dùng trước khi đổi giao diện công khai; [báo cáo chặng 1](../debate/claude-lsl-athena-stage1-report.md) ghi nhận người dùng đã duyệt chặng API v3. Sự đồng ý kỹ thuật giữa Codex và Claude không thay quyền quyết định phạm vi các chặng tiếp theo.
+**Đã thống nhất về kỹ thuật:** extension live cho Athena; API v3 tương thích ngược; timestamp raw chỉ trong hook/CSV, timeline LSL làm đều có trạng thái; vector timestamp cho `push_chunk`; marker theo thời điểm bấm; optics `Optical/raw`; CI dùng dữ liệu tổng hợp. Quy tắc dự án (`AGENTS.md`, khi đó tên là `CLAUDE.md`) yêu cầu proposal và sự cho phép của người dùng trước khi đổi giao diện công khai; [báo cáo chặng 1](../debate/claude-lsl-athena-stage1-report.md) ghi nhận người dùng đã duyệt chặng API v3. Sự đồng ý kỹ thuật giữa Codex và Claude không thay quyền quyết định phạm vi các chặng tiếp theo.
 
 **Hoãn tới khi có số đo:** chốt tham số timeline, ngưỡng p99, thread/queue, `lookahead`, panel trạng thái, tự bật khi kết nối và xác nhận độ chính xác timestamp trên thiết bị thật.
 

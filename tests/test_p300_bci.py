@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from extensions.p300_bci import epochs, report, schedule, session, timing
+from study.p300_bci import epochs, report, schedule, session, timing
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -249,7 +249,7 @@ def app_with_p300(qapp, spec, settings, monkeypatch, tmp_path):
     from musemonitor.ui import main_window as mw
     monkeypatch.setattr(mw.MainWindow, "start_scan", lambda self: None)
     monkeypatch.setenv("MUSEMONITOR_DATA_DIR", str(tmp_path / "data"))              # sessions under tmp
-    ext_dir = tmp_path / "exts"; shutil.copytree(REPO / "extensions" / "p300_bci", ext_dir / "p300_bci",
+    ext_dir = tmp_path / "exts"; shutil.copytree(REPO / "study" / "p300_bci", ext_dir / "p300_bci",
                                                   ignore=shutil.ignore_patterns("__pycache__"))
     w = mw.MainWindow(spec, settings=settings, extension_dirs=[str(ext_dir)]); w.resize(1200, 800); w.show()
     rec = next(r for r in w.extensions.records if r.id == "p300_bci")
@@ -361,7 +361,7 @@ def test_every_way_of_stopping_closes_the_files(app_with_p300, how, monkeypatch)
 
 
 def test_offline_cli(app_with_p300, capsys):
-    from extensions.p300_bci import offline
+    from study.p300_bci import offline
     w, ext = app_with_p300
     sim = run_session(w, ext)
     folder = ext.writer.folder
@@ -445,7 +445,7 @@ def test_readiness_is_checked_again_when_the_countdown_ends(app_with_p300):
 
 
 def test_pages_follow_the_configuration_and_language(app_with_p300):
-    from extensions.p300_bci import instructions
+    from study.p300_bci import instructions
     plan = schedule.build(schedule.Config(repetitions=2, trials_per_block=3, blocks=2, rest_s=20, mode="response_assisted"))
     en = instructions.pages(plan, "en")
     text = " ".join(" ".join(p["lines"]) for p in en)
@@ -548,11 +548,13 @@ def test_clock_steps_are_counted_per_session(app_with_p300):
 
 # ---- report.html -------------------------------------------------------------------------------------------
 def test_report_after_a_session_has_every_section(app_with_p300):
-    from extensions.p300_bci import report
+    from study.p300_bci import report
     w, ext = app_with_p300
     sim = run_session(w, ext)
     folder = ext.writer.folder
     sim.run(ext.plan.duration_s + 2, session_running=True)
+    th = getattr(ext, "analysis_thread", None)               # the session's own analysis writes the same files:
+    if th is not None: th.join(60)                           # let it finish first (slow CI runners raced it)
     s = session.load(folder)
     assert len(s["contact"]) >= 10 and set(s["contact"][0]["channels"]) == {"TP9", "AF7", "AF8", "TP10"}   # every 2 s
     out = report.write(folder, lang="vi")
@@ -573,7 +575,7 @@ def test_report_after_a_session_has_every_section(app_with_p300):
 
 
 def test_report_without_an_erp_says_so_and_handles_old_sessions(app_with_p300):
-    from extensions.p300_bci import offline, report
+    from study.p300_bci import offline, report
     w, ext = app_with_p300
     sim = run_session(w, ext, amp=0.0)                                              # no ERP at all
     folder = ext.writer.folder
@@ -823,3 +825,21 @@ def test_report_flags_eeg_that_stops_before_the_stimulation_and_lists_every_fail
     assert all(ok is None or type(ok) is bool for _, _, _, ok in qual)
     doc = report.write(folder).read_text(encoding="utf-8")
     assert "EEG chỉ phủ" not in doc                         # stopped by hand: EEG covers what was shown
+
+
+def test_the_p300_study_is_found_in_study_by_default(qapp, spec, settings, monkeypatch, tmp_path):
+    """study/ is an extension folder: the app finds p300_bci there with its default search path, once."""
+    from musemonitor.plugins import loader
+    from musemonitor.ui import main_window as mw
+    assert loader.STUDY_DIR == REPO / "study" and loader.STUDY_DIR in loader.search_dirs()
+    assert not (REPO / "extensions" / "p300_bci").exists()
+    found = [d for d in loader.discover() if d.id == "p300_bci"]
+    assert len(found) == 1 and "study" in found[0].source and found[0].error is None
+    monkeypatch.setattr(mw.MainWindow, "start_scan", lambda self: None)
+    monkeypatch.setenv("MUSEMONITOR_DATA_DIR", str(tmp_path / "data"))
+    w = mw.MainWindow(spec, settings=settings); w.show()
+    try:
+        rec = next(r for r in w.extensions.records if r.id == "p300_bci")
+        assert rec.status == "active", rec.status
+    finally:
+        w.close()

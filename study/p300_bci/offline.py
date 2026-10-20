@@ -1,9 +1,9 @@
 """Offline tools for a P300 session folder (no app needed).
 
-    ~/.venvs/musemonitor/bin/python extensions/p300_bci/offline.py check  <session folder>
-    ~/.venvs/musemonitor/bin/python extensions/p300_bci/offline.py timing <session folder>
-    ~/.venvs/musemonitor/bin/python extensions/p300_bci/offline.py report <session folder> [--lang vi|en]
-    ~/.venvs/musemonitor/bin/python extensions/p300_bci/offline.py erp    <session folder> [--preset default|li2020]
+    ~/.venvs/musemonitor/bin/python study/p300_bci/offline.py check  <session folder>
+    ~/.venvs/musemonitor/bin/python study/p300_bci/offline.py timing <session folder>
+    ~/.venvs/musemonitor/bin/python study/p300_bci/offline.py report <session folder> [--lang vi|en]
+    ~/.venvs/musemonitor/bin/python study/p300_bci/offline.py erp    <session folder> [--preset default|li2020]
                                     [--timeline fit|online] [--channels TP9,TP10] [--csv erp.csv]
 
 ``erp`` cuts epochs at the stimulus ONSET (Qt paint time), never at key presses, and prints why epochs were rejected.

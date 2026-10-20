@@ -14,13 +14,14 @@ from .api import Extension
 ENTRY_POINT_GROUP = "musemonitor.extensions"
 ENV_VAR = "MUSEMONITOR_EXTENSIONS"
 PROJECT_DIR = Path(__file__).resolve().parents[3] / "extensions"   # <repo>/extensions (when running from src/)
+STUDY_DIR = Path(__file__).resolve().parents[3] / "study"           # <repo>/study: research studies (e.g. p300_bci)
 USER_DIR = Path.home() / ".musemonitor" / "extensions"
 
 
 def search_dirs():
-    """Extension folders in priority order: environment variable → project folder → user folder."""
+    """Extension folders in priority order: environment variable → project folder → studies folder → user folder."""
     dirs = [Path(p).expanduser() for p in os.environ.get(ENV_VAR, "").split(os.pathsep) if p]
-    dirs += [PROJECT_DIR, USER_DIR]
+    dirs += [PROJECT_DIR, STUDY_DIR, USER_DIR]
     out = []
     for d in dirs:
         if d.is_dir() and d.resolve() not in [o.resolve() for o in out]: out.append(d)

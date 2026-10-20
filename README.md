@@ -14,7 +14,8 @@ Built with BrainFlow, bleak, PySide6 and pyqtgraph.
 - IMU (Athena), light/dark theme, one time range shared by every time-domain plot
 - Manual event markers (Space), automatic session folders in `data/`, review windows for past recordings
 - Extensions: add tabs and analyses without touching the app (blink/glance/eye-closure, 3D head pose, band power…)
-- Research tools: Lab Streaming Layer outlet, a P300 stimulus / ERP pipeline (experimental)
+- Research: a `study/` folder for academic studies — first a P300 stimulus / ERP pipeline (experimental) — and a
+  Lab Streaming Layer outlet
 - Head and eye interaction demos: a food-ordering kiosk and a Rubik's cube game controlled by head pointing, nods,
   tilts, blinks and jaw clenches, each with a keyboard / mouse fallback
 
@@ -25,7 +26,8 @@ Built with BrainFlow, bleak, PySide6 and pyqtgraph.
 | **The monitor** | Connect, fit-test, record and review: EEG, optics (PPG / fNIRS), IMU, events, timing, reports | `src/musemonitor/` (see *Development*) |
 | **Analysis extensions** | Band power, artifact log (blink / EMG / amplitude / flat / motion marks) | `extensions/band_power`, `artifact_log` |
 | **Interaction estimators** | Eyes: blinks, glances, eye closure. Head: 3D pose, guided calibration, camera "facing the screen" reference | `extensions/eye_interaction`, `head_motion`, `head_motion_plus` |
-| **Research** | LSL outlet for LabRecorder / XDF; P300 stimulus window, timing report and ERP (stage A, no classifier yet) | `extensions/lsl_outlet`, `p300_bci`, `tools/` |
+| **Studies** | Research studies with a protocol, traceable data and repeatable analysis — the direction of the project towards an academic research platform. First: P300 stimulus window, timing report and ERP (stage A, no classifier yet) | `study/` ([README](study/README.md)), `study/p300_bci` |
+| **Research tools** | LSL outlet for LabRecorder / XDF, timing and stream checks | `extensions/lsl_outlet`, `tools/` |
 | **Demos and games** | *Muse Bistro* (order food with head and eyes); *Muse Cube* (solve a Rubik's cube with the head, blinks and jaw clench). Both reuse the interaction estimators read-only | `extensions/food_order`, `muse_cube` |
 | **Docs and tests** | Extension guide, LSL report, offscreen pytest suite on synthetic signals | `docs/`, `tests/` |
 
@@ -155,8 +157,8 @@ The optical-channel → wavelength mapping of Athena is not published by BrainFl
 
 ## Extensions
 
-Extensions live in `extensions/` (or `~/.musemonitor/extensions`, `$MUSEMONITOR_EXTENSIONS`, or a pip
-package). They can read live signals, add tabs and menu actions, react to events and recordings, and
+Extensions live in `extensions/` and research studies in `study/` (also `~/.musemonitor/extensions`,
+`$MUSEMONITOR_EXTENSIONS`, or a pip package). They can read live signals, add tabs and menu actions, react to events and recordings, and
 write their own files. A crashing extension is disabled on its own; the app keeps running.
 
 In the app, **Extensions ▸ Manage extensions…**:
@@ -175,7 +177,7 @@ Bundled extensions:
 | `eye_interaction` | HCI/BCI ▸ Eyes | avatar + plots: blinks (AF7/AF8), left/right glances (AF7 − AF8, calibrated), eye closure from TP9/TP10 alpha | Athena EEG | — |
 | `head_motion`, `head_motion_plus` | HCI/BCI ▸ Motion | 3D head pose from the IMU; *plus*: guided axis calibration and an optional camera "facing the screen" reference (off by default, asks permission, frames never saved) | Athena IMU (+ `opencv-python-headless` for the camera) | — |
 | `lsl_outlet` | Extensions ▸ LSL Outlet | streams live EEG, your event markers and a timing-quality stream to Lab Streaming Layer (LabRecorder / XDF); off until *Start LSL streams*; timestamps are host-receive based and smoothed, not calibrated against a stimulus — see its README | Athena EEG + `pip install -e .[lsl]` | — |
-| `p300_bci` | Analysis ▸ Other | **experimental, stage A:** 3×3 P300 stimulus window (5 command cells), session recording with a timing report (measured / estimated / not measured), epochs at the stimulus onset and target / non-target ERP; offline `check` / `timing` / `erp` tools; no classifier or online control yet — see its README | Athena EEG (any device with ≥ 2 EEG channels) | — |
+| `p300_bci` (in `study/`) | Analysis ▸ Other | **study, experimental, stage A:** 3×3 P300 stimulus window (5 command cells), session recording with a timing report (measured / estimated / not measured), epochs at the stimulus onset and target / non-target ERP; offline `check` / `timing` / `erp` tools; no classifier or online control yet — see its README | Athena EEG (any device with ≥ 2 EEG channels) | — |
 | `food_order` | Analysis ▸ Other | **demo:** *Muse Bistro*, a food-ordering window driven by head pointing and nod-to-select (dwell optional), full turns, shake, look-up, and eye shortcuts (double blink → item details, eyes closed → quick cart; TP9/TP10 by default), built on the head_motion_plus and eye_interaction estimators (reused read-only); sign-in, size / toppings / quantity, cart, simulated checkout; VI / EN; camera recenter and demo-video recording; keyboard and mouse fallback; optional labelled gesture capture — see its README | Athena EEG + IMU | — |
 | `muse_cube` | Analysis ▸ Other | **game:** *Muse Cube*, a Rubik's cube (2×2 default, 3×3) in its own window — Glass (see-through) and Classic styles, a 2D panel (three ring clusters or a cross net), every layer selectable and clearly lit; head control on Athena — point a face, nod for the next layer, tilt to turn it (kept only if a tilt test passes), full turn / look-up to turn the cube, shake to undo; double blink ↻ and jaw clench ↺ (only with a layer selected); calibration with animated pictograms; live EOG / EMG with thresholds and filters by hand; optional camera recenter that shows a 3D head, never the image; tutorial, way-back hint, random scramble; keyboard / mouse fallback; reuses head_motion_plus, eye_interaction and food_order gestures read-only through an adapter — see its README | Athena EEG + IMU (or none: keyboard) | — |
 
@@ -208,7 +210,7 @@ Dependencies point one way: `ui / plugins → device / storage → core → conf
 `config` never import Qt, so they are testable without a display. Import order matters:
 numpy/scipy/brainflow must be imported before PySide6 (otherwise scipy imports very slowly) —
 `musemonitor/__init__.py` handles it, so always import through the package. Rules for changing the
-project: [CLAUDE.md](CLAUDE.md).
+project, for every AI agent and contributor: [AGENTS.md](AGENTS.md).
 
 ### Module roles
 
@@ -283,6 +285,7 @@ project: [CLAUDE.md](CLAUDE.md).
 | Path | Role |
 |---|---|
 | `extensions/` | Bundled extensions (table above). |
+| `study/` | Research studies, each an extension with its own protocol, offline tools and README ([study/README.md](study/README.md)). First: `p300_bci`. |
 | `tools/` | `capture_athena.py` (raw BrainFlow fixture for golden tests), `organize_data.py` (old flat recordings → session folders), `make_screenshots.py` (README images from synthetic data), `lsl_check.py` / `xdf_check.py` (check the LSL streams live / in a LabRecorder XDF file), `timeline_report.py` (timestamp-smoothing measurements), `key_clock_probe.py` (key-press timing on the real machine). |
 | `tests/` | pytest suite on deterministic synthetic signals; runs offscreen, no headset needed. |
 | `docs/` | [EXTENSIONS.md](docs/EXTENSIONS.md) (extension guide), [LSL_ATHENA_IMPLEMENTATION_REPORT.md](docs/LSL_ATHENA_IMPLEMENTATION_REPORT.md), the LSL prototype page, and screenshots. |

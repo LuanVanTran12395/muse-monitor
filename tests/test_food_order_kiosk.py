@@ -307,7 +307,8 @@ def test_kiosk_without_the_other_extensions_is_keyboard_only(qapp, spec, setting
 def test_camera_recenters_when_facing_and_still_and_switches_the_demo_layout(app_with_kiosk):
     w, ext = app_with_kiosk
     c = ext.controller
-    assert c.camera is not None and c.gate is not None                    # OpenCV + YuNet model available
+    if c.camera is None: pytest.skip(f"camera unavailable: {c.camera_why}")    # OpenCV is optional (not in CI)
+    assert c.gate is not None
     win = c.open(calibrate=False)
     c._key(key(QtCore.Qt.Key_Escape))
     for _ in range(60):                                                   # a still head
@@ -326,7 +327,7 @@ def test_camera_recenters_when_facing_and_still_and_switches_the_demo_layout(app
 
 
 def test_demo_recorder_writes_a_playable_video(app_with_kiosk, tmp_path):
-    import cv2
+    cv2 = pytest.importorskip("cv2")                                     # OpenCV is optional (not in CI)
     w, ext = app_with_kiosk
     c = ext.controller
     ok, msg = c.record_start()
@@ -505,6 +506,7 @@ def test_whole_order_with_the_keyboard_only_real_key_events(app_with_kiosk):
 
 
 def test_demo_video_is_started_and_stopped_from_the_kiosk_and_the_tab_says_what_it_does(app_with_kiosk):
+    pytest.importorskip("cv2")                                           # the recorder writes with OpenCV
     w, ext = app_with_kiosk
     c = ext.controller
     win = c.open(calibrate=False); c._key(key(QtCore.Qt.Key_Escape))

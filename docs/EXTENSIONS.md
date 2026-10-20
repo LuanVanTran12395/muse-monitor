@@ -74,6 +74,7 @@ PYTHONPATH=src python -m musemonitor.plugins list
 | Location | Use it for |
 |---|---|
 | `extensions/` in this project | extensions developed alongside the app |
+| `study/` in this project | research studies (e.g. `p300_bci`), each an extension with its own protocol and offline tools — see `study/README.md` |
 | `~/.musemonitor/extensions/` | personal extensions, kept outside the repo |
 | folders in `$MUSEMONITOR_EXTENSIONS` (`:`-separated) | anything else, e.g. a separate git repo |
 | pip packages with an entry point in group `musemonitor.extensions` | distributable extensions |

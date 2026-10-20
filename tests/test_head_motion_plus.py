@@ -272,7 +272,7 @@ def test_status_words_and_recenter_age(plus_tab, monkeypatch):
     assert tab.canvas.recentered[1] == "manual" and tab.canvas.recenter_text() == "recentered just now (manual)"
     mod = sys.modules[type(tab).__module__]
     t0 = tab.canvas.recentered[0]
-    assert tab.canvas.recenter_text(t0 + 150) == "recentered 2 min ago (manual)"
+    assert tab.canvas.recenter_text(t0 + 140) == "recentered 2 min ago (manual)"   # 2.33 min (not 2.5: rounds either way)
     assert tab.canvas.flash_until > t0                                                 # "Recentered" label shown
     assert not tab.canvas.grab().toImage().isNull()
 
