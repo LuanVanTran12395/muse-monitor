@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from extensions.p300_bci import epochs, schedule, session, timing
+from extensions.p300_bci import epochs, report, schedule, session, timing
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -202,6 +202,7 @@ class Sim:
 
     def __init__(self, w, ext, amp=8.0, seed=0):
         self.w, self.ext, self.amp = w, ext, amp
+        self.silent = False                                   # True: the headset stops sending (no disconnect)
         self.now = 1000.0
         self.rng = np.random.default_rng(seed)
         ext.mono = lambda: self.now
@@ -236,7 +237,7 @@ class Sim:
             if session_running and self.ext.writer is not None:
                 self.ext._tick()
                 if self.ext.window is not None and self.ext.window.pending: self.ext.window.repaint()
-            while self.sample_times(1)[0] + (self.PACKET - 1) / self.FS + self.BLE_S <= self.now:
+            while not self.silent and self.sample_times(1)[0] + (self.PACKET - 1) / self.FS + self.BLE_S <= self.now:
                 x, t = self.eeg(self.PACKET)
                 ts = np.full(self.PACKET, t[-1] + self.BLE_S - 1000.0 + self.UNIX0)
                 self.n += self.PACKET
@@ -276,10 +277,11 @@ def test_start_is_blocked_until_stream_and_timing_are_ready(app_with_p300):
     assert ext.blockers() == [], ext.blockers()
 
 
-def run_session(w, ext, mode="eeg_only", amp=8.0):
+def run_session(w, ext, mode="eeg_only", amp=8.0, **cfg):
     connected(w)
-    ext.tab.write_config(schedule.Config(repetitions=6, trials_per_block=3, blocks=1, cue_s=0.5, rest_s=0.0,
-                                         seed=3, mode=mode))
+    ext.tab.write_config(schedule.Config(**dict(dict(repetitions=6, trials_per_block=3, blocks=1, cue_s=0.5,
+                                                     rest_s=0.0, seed=3, mode=mode), **cfg)))
+    ext.tab.fixed_seed.setChecked(True)                                     # reproducible tests
     ext.tab.instr.setChecked(False); ext.tab.countdown.setValue(0)          # straight into the session
     sim = Sim(w, ext, amp=amp)
     sim.run(30)
@@ -449,7 +451,7 @@ def test_pages_follow_the_configuration_and_language(app_with_p300):
     text = " ".join(" ".join(p["lines"]) for p in en)
     assert "6 trials in 2 blocks" in text and "press Space each time" in text and "20 s break" in text
     vi = " ".join(" ".join(p["lines"]) for p in instructions.pages(replace(plan, config=replace(plan.config, mode="eeg_only")), "vi"))
-    assert "Không cần nhấn phím nào" in vi and len(en) == 6
+    assert "Không nhấn phím nào khi các ô đang sáng" in vi and len(en) == 6
 
 
 def test_session_messages_follow_the_language(app_with_p300):
@@ -562,8 +564,10 @@ def test_report_after_a_session_has_every_section(app_with_p300):
     assert "CHỈ MANG TÍNH THĂM DÒ" in doc and "not measured" in doc
     assert (folder / "erp_tp9_tp10.csv").read_text().startswith("time_s,target_mean_uv")
     stats = report.window_stats(epochs.analyse_session(s, epochs.PRESETS["default"], timing.fit_timeline))
-    assert stats["diff"] > 1.0 and stats["p"] < 0.01 and 0.29 <= stats["peak_latency"] <= 0.37      # synthetic ERP found
-    assert "Có khác biệt target / non-target" in doc
+    assert stats["diff"] > 1.0 and 0.29 <= stats["peak_latency"] <= 0.37                         # synthetic ERP found
+    # 3 trials → the trial-level sign-flip p cannot go below 2/8: few trials are honestly weak evidence
+    assert stats["n_trials"] == 3 and stats["p"] == 0.25
+    assert "Quá ít trial (3)" in doc
     en = report.write(folder, lang="en").read_text()
     assert ">Electrodes<" in en and ">Good epochs<" in en and "EXPLORATORY" in en
 
@@ -577,7 +581,7 @@ def test_report_without_an_erp_says_so_and_handles_old_sessions(app_with_p300):
     (folder / "contact.csv").unlink()                                               # like a session from before
     assert offline.main(["report", str(folder), "--lang", "vi"]) == 0
     doc = (folder / "report.html").read_text()
-    assert "Chưa thấy khác biệt" in doc and "không ghi chất lượng tiếp xúc" in doc
+    assert "Quá ít trial" in doc and "không ghi chất lượng tiếp xúc" in doc            # 3 trials: no test possible
 
 
 def test_report_is_written_after_the_session_and_opened_from_the_tab(app_with_p300, monkeypatch):
@@ -624,3 +628,198 @@ def test_new_folder_with_subject(tmp_path):
     b = session.new_folder(tmp_path, stamp="20260101_000000", subject="S01")
     assert a.name == "20260101_000000_S01" and b.name == "20260101_000000_S01_2"
     with pytest.raises(ValueError): session.new_folder(tmp_path, subject="../x")
+
+
+def test_sign_flip_p_is_exact_for_few_trials_and_uses_trials_as_units():
+    assert report.sign_flip_p([1.0]) is None
+    assert report.sign_flip_p([1.0, 1.0, 1.0]) == 0.25                     # 2 of 8 sign patterns are as extreme
+    p = report.sign_flip_p(np.r_[np.ones(10), -np.ones(10)] + 0.0, n_perm=500)
+    assert p > 0.9
+    res = dict(reasons=[None] * 40, is_target=[i % 4 == 0 for i in range(40)], trial=[i // 4 for i in range(40)],
+               times=np.linspace(-0.2, 0.8, 101), epochs=np.zeros((40, 1, 101)))
+    res["epochs"][[i for i in range(40) if i % 4 == 0], 0, 45:70] = 5.0     # every trial: target higher in window
+    res["erp"] = epochs.erp(res["epochs"], res["is_target"], res["reasons"])
+    w = report.window_stats(res)
+    assert w["n_trials"] == 10 and w["diff"] > 4 and w["p"] == 2 / 1024
+
+
+def test_primary_effect_is_the_mean_of_trial_differences_even_with_unequal_epochs():
+    # trial 0: target +4 µV in window, many non-targets; trial 1: target 0 but only one non-target kept.
+    times = np.linspace(-0.2, 0.8, 101); win = (times >= 0.25) & (times < 0.5)
+    tg = [True, False, False, False, False, True, False, False, False, False]
+    trial = [0] * 5 + [1] * 5
+    reasons = [None] * 5 + [None, None, "amplitude", "amplitude", "amplitude"]
+    ep = np.zeros((10, 1, 101)); ep[0, 0, win] = 4.0; ep[6, 0, win] = -2.0
+    ep[7:, 0, :] = np.nan
+    res = dict(reasons=reasons, is_target=tg, trial=trial, block=[0] * 5 + [1] * 5, times=times, epochs=ep)
+    res["erp"] = epochs.erp(ep, tg, reasons)
+    w = report.window_stats(res, min_keep=0.0)                                      # any kept epoch makes a trial valid
+    assert w["trial_diffs"] == [4.0, 2.0] and w["diff"] == 3.0                     # same vector as the p uses
+    assert abs(w["diff_pooled"] - (2.0 - (-2.0 / 5))) < 1e-9                      # pooled: 2.4 — a different estimand
+    assert w["block_diffs"] == {0: 4.0, 1: 2.0} and w["n_trials"] == 2 and w["p"] == 0.5
+    w = report.window_stats(res)                     # default: ≥ 50 % of each class kept — trial 1 keeps 1/4 non-targets
+    assert w["trial_diffs"] == [4.0] and w["n_trials"] == 1 and w["p"] is None
+
+
+
+# ---- A2 / A3: seed per session, varying repetitions, count question ------------------------------------------
+def test_repetition_variation_is_seeded_bounded_and_keeps_labels_balanced():
+    cfg = schedule.Config(repetitions=10, repetitions_jitter=2, trials_per_block=5, blocks=4, seed=11, ask_s=5.0)
+    a, b = schedule.build(cfg), schedule.build(cfg)
+    assert [t.repetitions for t in a.trials] == [t.repetitions for t in b.trials]          # same seed → same plan
+    assert [(x.cell, x.on_s) for x in a.stims] == [(x.cell, x.on_s) for x in b.stims]
+    reps = [t.repetitions for t in a.trials]
+    assert all(8 <= r <= 12 for r in reps) and len(set(reps)) > 1
+    for t in a.trials:
+        mine = [x for x in a.stims if x.trial == t.trial]
+        assert len(mine) == 5 * t.repetitions and sum(x.is_target for x in mine) == t.repetitions
+        assert all(sum(x.cell == c for x in mine) == t.repetitions for c in schedule.FLASHING)
+        last_on = max(x.on_s for x in mine)
+        assert t.ask_on_s >= last_on + 0.8 and t.ask_off_s == t.ask_on_s + 5.0 == t.end_s   # no epoch holds key presses
+    kinds = [x.kind for x in schedule.actions(a)]
+    assert kinds.count("ask_on") == kinds.count("ask_off") == 20
+    order = [x.kind for x in schedule.actions(a) if x.kind in ("ask_off", "trial_end")]
+    assert order[:2] == ["ask_off", "trial_end"]                     # the answer is closed before the trial row
+    assert schedule.Config(repetitions=2, repetitions_jitter=2).errors()
+    assert schedule.Config(ask_s=1.0).errors() and not schedule.Config(ask_s=0.0).errors()
+
+
+def test_no_variation_keeps_older_plans_identical():
+    old = schedule.build(schedule.Config(seed=5))
+    assert all(t.repetitions == 10 and t.ask_on_s is None for t in old.trials)
+    assert [x.kind for x in schedule.actions(old)].count("ask_on") == 0
+    again = schedule.build(schedule.Config(seed=5, repetitions_jitter=0))
+    assert [(x.cell, x.on_s) for x in old.stims] == [(x.cell, x.on_s) for x in again.stims]
+
+
+def test_count_question_records_answers_and_reports_attention(app_with_p300):
+    w, ext = app_with_p300
+    sim = run_session(w, ext, repetitions=4, repetitions_jitter=1, trials_per_block=3, ask_s=2.0)
+    folder = ext.writer.folder
+    typed = iter([lambda r: r, lambda r: r + 1, lambda r: None])            # right, off by one, no answer
+    orig = ext._do
+
+    def do(a, planned, now):
+        orig(a, planned, now)
+        if a.kind == "ask_on":
+            assert ext.window.question is not None and ext.window.lit is None
+            v = next(typed)(a.ref.repetitions)
+            if v is not None:
+                for ch in str(v): ext._key(key(getattr(QtCore.Qt, f"Key_{ch}")))
+                ext._key(key(QtCore.Qt.Key_Return))
+                assert ext.window.question[4] is True                       # confirmed ✓
+    ext._do = do
+    sim.run(ext.plan.duration_s + 2, session_running=True)
+    assert ext.writer is None
+    s = session.load(folder)
+    reps = [t.repetitions for t in ext.plan.trials]
+    tr = s["trials"]
+    assert [t["repetitions"] for t in tr] == reps
+    assert [t["count_answer"] for t in tr] == [reps[0], reps[1] + 1, None]
+    assert [t["count_correct"] for t in tr] == [1, 0, None]
+    assert all(t["ask_on_mono"] is not None for t in tr) and tr[0]["answer_mono"] >= tr[0]["ask_on_mono"]   # same fake-clock tick
+    keys = s["keys"]
+    assert keys == []                                                       # eeg_only: no keys.csv rows
+    att = report.attention(tr)
+    assert att == dict(asked=3, answered=2, exact=1, within1=2, rows=[(0, reps[0], reps[0]), (1, reps[1], reps[1] + 1),
+                                                                       (2, reps[2], None)])
+    rep_path = report.write(folder, lang="vi")
+    doc = rep_path.read_text(encoding="utf-8")
+    assert "Chú ý (câu hỏi đếm)" in doc and "Chất lượng phép đo" in doc
+    assert "KHÔNG ĐẠT" in doc and "đếm đúng (±1)" in doc                     # 2/3 = 67 % < 80 %
+    assert "không kết luận về P300" in doc
+
+
+def test_seed_is_new_every_session_unless_fixed(app_with_p300):
+    w, ext = app_with_p300
+    sim = run_session(w, ext)
+    ext.stop("stopped")
+    s1 = json.loads((ext.last_folder / "config.json").read_text())
+    assert s1["schedule"]["seed"] == 3 and s1["seed_fixed"] is True
+    ext.tab.fixed_seed.setChecked(False)
+    seeds = set()
+    for _ in range(2):
+        assert ext.start(), ext.blockers()
+        seeds.add(ext.plan.config.seed); ext.stop("stopped")
+        cfg = json.loads((ext.last_folder / "config.json").read_text())
+        assert cfg["schedule"]["seed"] == ext.plan.config.seed and cfg["seed_fixed"] is False
+        sim.run(0.5)
+    assert len(seeds) == 2 and 3 not in seeds
+
+
+def test_older_sessions_without_the_new_trial_columns_still_load(app_with_p300):
+    w, ext = app_with_p300
+    sim = run_session(w, ext)
+    folder = ext.writer.folder
+    sim.run(ext.plan.duration_s + 2, session_running=True)
+    path = folder / "trials.csv"
+    lines = path.read_text().splitlines()
+    old_cols = ["trial", "block", "target", "cue_on_mono", "start_mono", "end_mono", "aborted"]
+    head = lines[0].split(",")
+    keep = [head.index(c) for c in old_cols]
+    path.write_text("\n".join(",".join(r.split(",")[i] for i in keep) for r in lines) + "\n")
+    s = session.load(folder)
+    assert all(t["repetitions"] == 6 and t["count_answer"] is None and t["ask_on_mono"] is None for t in s["trials"])
+    assert report.attention(s["trials"]) is None
+    doc = report.write(folder).read_text(encoding="utf-8")
+    assert "chưa đánh giá" in doc and "Chú ý (câu hỏi đếm)" not in doc
+
+
+def test_tab_never_makes_the_app_window_taller_than_a_laptop_screen(app_with_p300):
+    # the long settings form scrolls: a tall tab raises the main window's minimum height, which pushed the
+    # fit-test Accept button off a full-screen window (≈ 956 px high on a 14" MacBook)
+    w, ext = app_with_p300
+    assert ext.tab.minimumSizeHint().height() <= 600, ext.tab.minimumSizeHint()
+    assert w.minimumSizeHint().height() <= 900, w.minimumSizeHint()
+
+
+
+# ---- a headset that goes silent without a disconnect (seen on Muse S Athena, 2026-10-19) ---------------------
+def test_session_stops_when_eeg_goes_silent_and_contact_is_not_reported_from_old_samples(app_with_p300):
+    w, ext = app_with_p300
+    sim = run_session(w, ext)
+    folder = ext.writer.folder
+    sim.run(5, session_running=True)
+    assert ext.writer is not None and ext.contact()["TP9"] != "No signal"
+    sim.silent = True                                     # Bluetooth up, no samples
+    sim.run(1.5, session_running=True)
+    assert ext.writer is not None                         # short gaps are tolerated
+    sim.run(1.0, session_running=True)
+    assert ext.writer is None and ext.last_folder == folder
+    cfg = json.loads((folder / "config.json").read_text())
+    assert cfg["stop_reason"] == "eeg_stalled" and not cfg["completed"]
+    assert set(ext.contact().values()) == {"No signal"}   # the buffer's old samples are not shown as Good
+    b = ext.blockers()
+    assert any("No EEG is arriving" in x for x in b) and ext.start() is False
+    assert "NO EEG" in ext.status_texts()["Stream"]
+    rows = session.load(folder)["contact"]
+    assert rows[-1]["channels"]["TP9"][0] in ("No signal", "Good")    # logged honestly up to the stop
+    sim.silent = False; sim.run(1.0)
+    assert not any("No EEG" in x for x in ext.blockers())
+
+
+def test_silence_during_a_break_also_stops_the_session(app_with_p300):
+    w, ext = app_with_p300
+    sim = run_session(w, ext, trials_per_block=1, blocks=2, rest_s=20.0)
+    t_rest = ext.plan.rests[0][0]
+    sim.run(t_rest + 3, session_running=True)
+    assert ext.rest_end is not None                       # in the break: only the break timer runs
+    sim.silent = True
+    for _ in range(30):                                   # the break timer (200 ms) is driven by Qt here
+        sim.run(0.1); ext._rest_tick()
+    assert ext.writer is None
+    assert json.loads((ext.last_folder / "config.json").read_text())["stop_reason"] == "eeg_stalled"
+
+
+
+def test_report_flags_eeg_that_stops_before_the_stimulation_and_lists_every_failed_check(app_with_p300):
+    w, ext = app_with_p300
+    sim = run_session(w, ext, trials_per_block=3)
+    folder = ext.writer.folder
+    sim.run(8, session_running=True)
+    ext.stop("stopped")                                   # stimulation planned well beyond the recorded EEG
+    s = session.load(folder)
+    qual = report.quality(s, None, ["TP9", "TP10"], None)
+    assert all(ok is None or type(ok) is bool for _, _, _, ok in qual)
+    doc = report.write(folder).read_text(encoding="utf-8")
+    assert "EEG chỉ phủ" not in doc                         # stopped by hand: EEG covers what was shown

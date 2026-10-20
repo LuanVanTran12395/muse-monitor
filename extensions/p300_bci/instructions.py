@@ -20,6 +20,8 @@ RESPOND_TEXT = {"vi": "Nhấn Space mỗi khi ô mục tiêu sáng", "en": "Pres
 REST_TEXT = {"vi": "Nghỉ — khối tiếp theo bắt đầu sau {s:.0f} giây", "en": "Rest — the next block starts in {s:.0f} s"}
 ENDED_TEXT = {"vi": "Phiên đã kết thúc ({reason})", "en": "Session ended ({reason})"}
 GET_READY_TEXT = {"vi": "Chuẩn bị…", "en": "Get ready…"}
+QUESTION_TEXT = {"vi": "Ô mục tiêu đã sáng bao nhiêu lần?", "en": "How many times did the target flash?"}
+QUESTION_HINT = {"vi": "Gõ số · ⌫ xoá · Enter xác nhận", "en": "Type the number · ⌫ delete · Enter confirm"}
 
 
 def pages(plan, lang="vi"):
@@ -31,7 +33,7 @@ def pages(plan, lang="vi"):
     respond = cfg.mode == "response_assisted"
     if lang == "en":
         task = ("Count its flashes silently and press Space each time it flashes." if respond
-                else "Count its flashes silently. Do not press any key.")
+                else "Count its flashes silently. Do not press any key while the cells flash.")
         return [
             dict(title="P300 experiment", icon="session", lines=[
                 f"About {minutes} min · {n_trials} trials in {cfg.blocks} block{'s' if cfg.blocks > 1 else ''}.",
@@ -39,7 +41,9 @@ def pages(plan, lang="vi"):
             dict(title="Your task", icon="task", lines=[
                 "Before each trial one cell is outlined in yellow: that is your TARGET.",
                 "Then the cells flash one after another, quickly and in random order.",
-                f"Keep looking at the target. {task}"]),
+                f"Keep looking at the target. {task}"]
+                + (["After each trial, type how many times the target flashed (it changes from trial to trial) "
+                    "and press Enter."] if cfg.ask_s > 0 else [])),
             dict(title="Example", icon="demo", demo=True, lines=[
                 f"Here the target is “{example}”. Look at it and count each time it turns white.",
                 "The other cells flash too — ignore them."]),
@@ -57,7 +61,7 @@ def pages(plan, lang="vi"):
                 "A short countdown follows, then the first target is shown."]),
         ]
     task = ("Đếm thầm số lần ô đó sáng và nhấn Space mỗi khi nó sáng." if respond
-            else "Đếm thầm số lần ô đó sáng. Không cần nhấn phím nào.")
+            else "Đếm thầm số lần ô đó sáng. Không nhấn phím nào khi các ô đang sáng.")
     return [
         dict(title="Thí nghiệm P300", icon="session", lines=[
             f"Khoảng {minutes} phút · {n_trials} lượt, chia {cfg.blocks} khối.",
@@ -65,7 +69,9 @@ def pages(plan, lang="vi"):
         dict(title="Nhiệm vụ của bạn", icon="task", lines=[
             "Trước mỗi lượt, một ô được khoanh viền vàng: đó là ô MỤC TIÊU.",
             "Sau đó các ô lần lượt sáng lên, nhanh và theo thứ tự ngẫu nhiên.",
-            f"Hãy nhìn vào ô mục tiêu. {task}"]),
+            f"Hãy nhìn vào ô mục tiêu. {task}"]
+            + (["Cuối mỗi lượt, gõ số lần ô mục tiêu đã sáng (con số thay đổi theo từng lượt) rồi nhấn Enter."]
+               if cfg.ask_s > 0 else [])),
         dict(title="Ví dụ", icon="demo", demo=True, lines=[
             f"Ở đây ô mục tiêu là “{example}”. Nhìn vào nó và đếm mỗi lần nó chuyển sang màu trắng.",
             "Các ô khác cũng sáng — hãy bỏ qua chúng."]),

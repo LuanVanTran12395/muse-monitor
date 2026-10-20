@@ -7,8 +7,8 @@ response) is not known without an external optical measurement.
 A small square in the bottom-left corner is white exactly while a cell is lit (black otherwise): a ready-made
 target for a photodiode later (proposal, appendix B), without changing the schedule.
 
-Participant screens (no stimuli, no onsets): instructions (``show_page``), countdown (``show_countdown``) and the
-break between blocks (``show_rest``). Layout, the same on every page so the eye knows where to look:
+Participant screens (no stimuli, no onsets): instructions (``show_page``), countdown (``show_countdown``), the
+break between blocks (``show_rest``) and the count question after a trial (``show_question``). Layout, the same on every page so the eye knows where to look:
 
     progress dots · title · illustration · text (large, scaled to the window) · navigation keys at the bottom
 """
@@ -43,27 +43,35 @@ class StimulusWindow(QtWidgets.QWidget):
         self.page = None         # instructions page: dict(title, lines, icon, icons, demo, index, total, nav)
         self.countdown = None    # (number, caption, fraction of the second left) during a countdown
         self.rest = None         # (seconds left, title, hint) during a break
+        self.question = None     # (question, typed answer, seconds left, hint, confirmed) after a trial
 
     # ---- participant screens -------------------------------------------------------------------------------
     def show_page(self, page, footer="", index=0, total=1, nav=None):
         """Instructions page. ``nav``: labels dict(next, back, click, esc); ``footer``: page counter text (also read
         by screen readers)."""
         self.page = dict(page, footer=footer, index=index, total=total, nav=nav or {})
-        self.countdown = self.rest = None
+        self.countdown = self.rest = self.question = None
         self.setAccessibleDescription(page["title"] + ". " + " ".join(page.get("lines", [])))
         self.update()
 
     def show_countdown(self, number, caption="", fraction=1.0):
-        self.page, self.rest, self.countdown = None, None, (number, caption, fraction)
+        self.page, self.rest, self.question, self.countdown = None, None, None, (number, caption, fraction)
         self.setAccessibleDescription(f"{caption} {number}")
         self.update()
 
     def show_rest(self, seconds, title, hint):
-        self.page, self.countdown, self.rest = None, None, (seconds, title, hint)
+        self.page, self.countdown, self.question, self.rest = None, None, None, (seconds, title, hint)
+        self.update()
+
+    def show_question(self, question, typed, seconds, hint, confirmed=False):
+        """Count question after a trial: the typed number in a large box (no stimulus on screen)."""
+        self.page, self.countdown, self.rest = None, None, None
+        self.question = (question, typed, seconds, hint, confirmed)
+        self.setAccessibleDescription(f"{question} {typed}")
         self.update()
 
     def clear_overlay(self):
-        self.page = self.countdown = self.rest = None
+        self.page = self.countdown = self.rest = self.question = None
         self.update()
 
     def set_state(self, lit=..., cue=..., message=..., tag=None):
@@ -221,6 +229,26 @@ class StimulusWindow(QtWidgets.QWidget):
         self._font(p, sz["body"]); p.setPen(QtGui.QColor(LABEL))
         p.drawText(QtCore.QRectF(0, h * 0.27 + s + 30 + sz["title"] * 2, w, sz["body"] * 2.5), QtCore.Qt.AlignCenter, hint)
 
+    def _paint_question(self, p):
+        question, typed, seconds, hint, confirmed = self.question
+        w, h, sz = self.width(), self.height(), self._sizes()
+        rect = QtCore.QRectF(w * 0.06, h * 0.1, w * 0.88, sz["title"] * 3.2)
+        size = self._fit_size([(question, rect)], sz["title"], 16, QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap)
+        self._font(p, size, bold=True); p.setPen(QtGui.QColor(TEXT))
+        p.drawText(rect, QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap, question)
+        bw, bh = min(w * 0.4, h * 0.45), min(w, h) * 0.3
+        box = QtCore.QRectF(w / 2 - bw / 2, h * 0.38, bw, bh)
+        p.setPen(QtGui.QPen(QtGui.QColor(LIT if confirmed else LABEL), 4)); p.setBrush(QtCore.Qt.NoBrush)
+        p.drawRoundedRect(box, 18, 18)
+        text = (typed or "_") + (" ✓" if confirmed else "")
+        size = bh * 0.55
+        while size > 12 and self._font(p, size, bold=True).horizontalAdvance(text) > bw * 0.82: size *= 0.92
+        p.setPen(QtGui.QColor(LIT))
+        p.drawText(box, QtCore.Qt.AlignCenter, text)
+        self._font(p, sz["body"]); p.setPen(QtGui.QColor(LABEL))
+        p.drawText(QtCore.QRectF(0, box.bottom() + 16, w, sz["body"] * 2.4), QtCore.Qt.AlignCenter,
+                   f"{hint}   ·   {seconds:.0f} s")
+
     def paintEvent(self, event):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing); p.setRenderHint(QtGui.QPainter.TextAntialiasing)
@@ -228,6 +256,7 @@ class StimulusWindow(QtWidgets.QWidget):
         if self.page is not None: self._paint_page(p); p.end(); return
         if self.countdown is not None: self._paint_countdown(p); p.end(); return
         if self.rest is not None: self._paint_rest(p); p.end(); return
+        if self.question is not None: self._paint_question(p); p.end(); return
         for cell in range(GRID * GRID):                              # session: the stimulus grid
             rect = self.cell_rect(cell)
             radius = rect.width() * 0.17

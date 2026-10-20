@@ -43,8 +43,9 @@ PAUSE_S = 0.1          # a receive interval longer than this is reported as a pa
 def eeg_timestamp_stats(ts_raw, fs, pause_s=PAUSE_S):
     """From the RAW receive timestamps: duplicates (Δ = 0: samples of one Bluetooth packet sharing a time), steps
     back (Δ < 0), bursty intervals (Δ > 3 sample periods — packets arriving in bursts, NOT data loss) and receive
-    pauses (Δ > ``pause_s``). Receive times cannot show lost packets. Compare the sample count with the session
-    length instead (the measured rate) — the app's package_num step count is not a lost-packet count on Athena."""
+    pauses (Δ > ``pause_s``). Receive times cannot show lost packets. The sample count against the session length
+    (the measured rate) is a coarse check that can hide short losses; the app's package_num step count is not a
+    lost-packet count on Athena."""
     d = np.diff(np.asarray(ts_raw, dtype=float))
     d = d[np.isfinite(d)]
     return dict(samples=int(len(ts_raw)), duplicate_timestamps=int((d == 0).sum()),
@@ -87,9 +88,10 @@ def summarize(stims, eeg, fs, clock_steps=0, timeline=None, writer=None, hook_s=
     estimated["clock_steps_during_session"] = int(clock_steps)
     if seq_anomalies is not None:                       # package_num steps other than 0/1 counted by the app
         estimated["package_num_steps_not_0_or_1_during_session"] = seq_anomalies
-        estimated["package_num_note"] = ("NOT a lost-packet count: Athena's package_num rule is unverified (see "
-                                         "musemonitor/core/timing.py). Judge data loss from the sample count vs the "
-                                         "session length (fit_per_segment rate).")
+        estimated["package_num_note"] = ("Undecoded diagnostic — NOT a lost-packet count: Athena's package_num rule is "
+                                         "unverified (see musemonitor/core/timing.py). The sample count vs the session "
+                                         "length (fit_per_segment rate) can hide short losses: no evidence of loss is "
+                                         "not proof of none.")
         if seq_deltas: estimated["package_num_step_histogram_since_connect"] = seq_deltas
     return dict(
         note="Onsets are software estimates (Qt paint). EEG times are host-receive estimates. The three groups are "

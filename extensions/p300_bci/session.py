@@ -3,7 +3,9 @@
     <app data folder>/p300_bci/<YYYYmmdd_HHMMSS>[_2…]/      (default <repo>/data/p300_bci, git-ignored)
         config.json   parameters, versions, device, contact, mode; completed / stop_reason / rows_written at close
         stimuli.csv   one row per flash: planned / fired / painted (on) and painted (off) monotonic times
-        trials.csv    one row per trial: target, cue, start, end, aborted
+        trials.csv    one row per trial: target, cue, start, end, aborted; repetitions of the trial and the count
+                      question (asked at, answer, answered at, correct) — empty when no question was asked.
+                      Sessions recorded before these columns existed are read with them set to None.
         keys.csv      response_assisted mode only: key presses, kept apart from flash times
         eeg.csv       one row per sample: index, raw receive time (unix), the same in the monotonic clock,
                       online timeline estimate, segment, flag reason, channels (µV, unfiltered)
@@ -28,7 +30,8 @@ import numpy as np
 
 STIM_FIELDS = ["seq", "block", "trial", "rep", "cell", "is_target", "planned_mono", "fired_mono", "painted_mono",
                "off_planned_mono", "off_fired_mono", "off_painted_mono", "late_ms", "missed"]
-TRIAL_FIELDS = ["trial", "block", "target", "cue_on_mono", "start_mono", "end_mono", "aborted"]
+TRIAL_FIELDS = ["trial", "block", "target", "cue_on_mono", "start_mono", "end_mono", "aborted",
+                "repetitions", "ask_on_mono", "count_answer", "answer_mono", "count_correct"]   # last 5: optional
 KEY_FIELDS = ["key", "qt_timestamp_ms", "handled_mono", "handled_unix"]
 CLOCK_FIELDS = ["mono", "unix", "offset", "stepped"]
 EEG_FIXED = ["index", "ts_raw_unix", "r_mono", "t_mono_online", "segment", "flag"]
@@ -226,6 +229,9 @@ def load(folder):
     config = json.loads((folder / "config.json").read_text(encoding="utf-8"))
     stimuli = [{k: _num(v) for k, v in r.items()} for r in _rows(folder / "stimuli.csv")]
     trials = [{k: _num(v) for k, v in r.items()} for r in _rows(folder / "trials.csv")]
+    for t in trials:                                        # older sessions: no repetitions / count question columns
+        for k in TRIAL_FIELDS: t.setdefault(k, None)
+        if t["repetitions"] is None: t["repetitions"] = (config.get("schedule") or {}).get("repetitions")
     keys = [{k: (_num(v) if k != "key" else v) for k, v in r.items()} for r in _rows(folder / "keys.csv")]
     channels = config.get("channels", [])
     with open(folder / "eeg.csv", newline="", encoding="utf-8") as f:

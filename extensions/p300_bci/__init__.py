@@ -5,6 +5,7 @@ and stage C (online control) are NOT in this version. No result here reproduces 
 """
 import json
 import math
+import secrets
 import threading
 import time
 
@@ -30,7 +31,10 @@ def sessions_root():
     return data_root() / "p300_bci"
 
 
-STOP_REASONS = ("completed", "stopped", "disconnected", "unloaded", "window_closed", "writer_backlog", "writer_error")
+STOP_REASONS = ("completed", "stopped", "disconnected", "unloaded", "window_closed", "writer_backlog", "writer_error",
+                "eeg_stalled")
+STALL_S = 2.0       # no EEG chunk for this long while "streaming" = the headset went silent without a disconnect
+                    # (seen on Muse S Athena: Bluetooth stays up, samples stop). EEG chunks normally arrive every ~50 ms.
 
 
 class _Bridge(QtCore.QObject):
@@ -74,6 +78,23 @@ class P300Tab(BaseTab):
         self.rest = spin(0, 600, int(d.rest_s), " s")
         self.cue = spin(200, 5000, int(d.cue_s * 1000), " ms", 100)
         self.seed = spin(0, 2_000_000_000, d.seed, "")
+        self.fixed_seed = QtWidgets.QCheckBox("Fixed")
+        self.fixed_seed.setToolTip("Off (default): a new seed is drawn at every Start and saved in config.json, so the "
+                                   "target order is new each session but can be rebuilt. On: use the number above "
+                                   "(repeat a session exactly).")
+        self.fixed_seed.toggled.connect(self.seed.setEnabled); self.seed.setEnabled(False)
+        seed_row = QtWidgets.QHBoxLayout(); seed_row.setContentsMargins(0, 0, 0, 0)
+        seed_row.addWidget(self.seed, 1); seed_row.addWidget(self.fixed_seed)
+        self.seed_box = QtWidgets.QWidget(); self.seed_box.setLayout(seed_row)
+        self.rep_jitter = spin(0, 10, d.repetitions_jitter, "")
+        self.rep_jitter.setPrefix("± ")
+        self.rep_jitter.setToolTip("Repetitions of each trial drawn in repetitions ± this (from the seed), so the "
+                                   "target's flash count changes from trial to trial. Needed for the count question.")
+        self.ask = spin(0, 20, int(d.ask_s), " s")
+        self.ask.setSpecialValueText("off")
+        self.ask.setToolTip("After each trial (after the last epoch): the participant types how many times the target "
+                            "flashed and presses Enter. Answer, right answer and times go to trials.csv; the report "
+                            "shows an Attention section. Use with a repetition variation (a fixed count tests nothing).")
         self.preset = QtWidgets.QComboBox()
         for name, p in epochs.PRESETS.items(): self.preset.addItem(name, name); self.preset.setItemData(
             self.preset.count() - 1, p.note, QtCore.Qt.ToolTipRole)
@@ -92,13 +113,19 @@ class P300Tab(BaseTab):
                               "Played only when no cell is flashing; each one is logged with its time.")
         self.countdown.setToolTip("Large countdown on the stimulus window before the first trial (0 = none)")
         for label, w in (("Mode", self.mode), ("Stimulus interval", self.soa), ("Flash", self.flash),
-                         ("Repetitions per trial", self.reps), ("Trials per block", self.trials),
+                         ("Repetitions per trial", self.reps), ("Repetition variation", self.rep_jitter),
+                         ("Count question", self.ask), ("Trials per block", self.trials),
                          ("Blocks", self.blocks), ("Rest between blocks", self.rest), ("Cue", self.cue),
-                         ("Random seed", self.seed), ("ERP preset", self.preset), ("Instructions", self.instr),
+                         ("Random seed", self.seed_box), ("ERP preset", self.preset), ("Instructions", self.instr),
                          ("Instruction language", self.lang), ("Countdown", self.countdown), ("Sound", self.sound)):
             form.addRow(label, w)
-        top.addWidget(box, 2)
-        v.addLayout(top)
+        scroll = QtWidgets.QScrollArea(); scroll.setWidget(box); scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(box.sizeHint().width() + 20)
+        scroll.setMinimumHeight(180)          # the long form scrolls: this tab must never make the app window taller
+        top.addWidget(scroll, 2)              # than the screen (fit-test Accept would fall off a full-screen window)
+        v.addLayout(top, 1)                   # settings and ERP plot share the height
 
         row = QtWidgets.QHBoxLayout()
         self.window_btn = QtWidgets.QPushButton("Open stimulus window")
@@ -121,7 +148,7 @@ class P300Tab(BaseTab):
         self.report_btn.clicked.connect(ext.open_report)
 
         self.plot = ctx.plots.widget(pg.PlotWidget())
-        self.plot.setMinimumHeight(220)
+        self.plot.setMinimumHeight(150)
         item = ctx.plots.plot(self.plot.getPlotItem(), timed=False)
         item.setLabel("bottom", "Time from onset", units="s"); item.setLabel("left", "µV")
         item.addLegend(offset=(5, 5))
@@ -139,16 +166,19 @@ class P300Tab(BaseTab):
         return schedule.Config(
             soa_s=self.soa.value() / 1000, flash_s=self.flash.value() / 1000, repetitions=self.reps.value(),
             trials_per_block=self.trials.value(), blocks=self.blocks.value(), rest_s=float(self.rest.value()),
-            cue_s=self.cue.value() / 1000, seed=int(self.seed.value()), mode=self.mode.currentData())
+            cue_s=self.cue.value() / 1000, seed=int(self.seed.value()), mode=self.mode.currentData(),
+            repetitions_jitter=self.rep_jitter.value(), ask_s=float(self.ask.value()))
 
     def write_config(self, cfg):
         self.soa.setValue(int(round(cfg.soa_s * 1000))); self.flash.setValue(int(round(cfg.flash_s * 1000)))
         self.reps.setValue(cfg.repetitions); self.trials.setValue(cfg.trials_per_block); self.blocks.setValue(cfg.blocks)
         self.rest.setValue(int(cfg.rest_s)); self.cue.setValue(int(round(cfg.cue_s * 1000))); self.seed.setValue(cfg.seed)
         self.mode.setCurrentIndex(max(0, self.mode.findData(cfg.mode)))
+        self.rep_jitter.setValue(cfg.repetitions_jitter); self.ask.setValue(int(round(cfg.ask_s)))
 
     def set_running(self, running):
-        for w in (self.subject, self.mode, self.soa, self.flash, self.reps, self.trials, self.blocks, self.rest, self.cue, self.seed,
+        for w in (self.subject, self.mode, self.soa, self.flash, self.reps, self.rep_jitter, self.ask, self.trials,
+                  self.blocks, self.rest, self.cue, self.seed_box,
                   self.preset, self.analyse_btn, self.instr, self.lang, self.countdown, self.sound):
             w.setEnabled(not running)
         self.stop_btn.setEnabled(running)
@@ -218,7 +248,7 @@ class P300BCI(Extension):
         self.trial_rec = None
         self.window = None
         self.last_folder = None
-        self.counts = dict(flashes=0, missed=0, trials=0, no_paint=0)
+        self.counts = dict(flashes=0, missed=0, trials=0, no_paint=0, answered=0, correct=0)
         self.hook_s = []
         self.phase = "idle"                  # idle | instructions | countdown | running
         self.lang = "vi"
@@ -229,6 +259,7 @@ class P300BCI(Extension):
         self.contact_every_s = 2.0
         self.last_contact = None
         self.rest_end = None
+        self.answer = self.ask_end = None                        # count question in progress
         self.cues = Cues(enabled=str(app.setting("sound", True)).lower() in ("true", "1"))
         self._timer = QtCore.QTimer(); self._timer.setSingleShot(True)
         self._timer.setTimerType(QtCore.Qt.PreciseTimer); self._timer.timeout.connect(self._tick)
@@ -240,6 +271,7 @@ class P300BCI(Extension):
             try: self.tab.write_config(schedule.Config(**json.loads(saved)))
             except (TypeError, ValueError): pass
         self.tab.subject.setText(str(app.setting("subject", "") or ""))
+        self.tab.fixed_seed.setChecked(str(app.setting("fixed_seed", False)).lower() in ("true", "1"))
         self.tab.instr.setChecked(str(app.setting("instructions", True)).lower() in ("true", "1"))
         self.tab.lang.setCurrentIndex(max(0, self.tab.lang.findData(app.setting("language", "vi"))))
         self.tab.countdown.setValue(int(app.setting("countdown_s", 5)))
@@ -262,12 +294,14 @@ class P300BCI(Extension):
         self.bridge = ClockBridge(self.unix, self.mono)
         self.timeline = OnlineTimeline(TimelineConfig(fs_nominal=self.fs))
         self.index = 0
+        self.last_eeg_mono = None                                # monotonic time of the last EEG chunk
 
     # ---- EEG hook (GUI thread: keep it short) ----------------------------------------------------------------
     def on_eeg_samples(self, x, ts_raw):
         t_start = time.perf_counter()
         n = x.shape[1]
         offset, mono_now, stepped = self.bridge.measure()
+        self.last_eeg_mono = mono_now
         r = np.asarray(ts_raw, dtype=float) + offset
         res = self.timeline.push(r, mono_now, uncertain="clock_step" if stepped else None)
         flag = res.reason or ("uncertain" if res.uncertain else None)
@@ -282,8 +316,19 @@ class P300BCI(Extension):
         self.index += n
 
     # ---- readiness ------------------------------------------------------------------------------------------------
+    def eeg_silence(self):
+        """Seconds since the last EEG chunk (None before the first one)."""
+        return None if self.last_eeg_mono is None else self.mono() - self.last_eeg_mono
+
+    def eeg_stalled(self):
+        silence = self.eeg_silence()
+        return silence is not None and silence > STALL_S
+
     def contact(self):
+        """Contact level per channel from the last 2 s of the app's buffer — "No signal" everywhere when no EEG
+        arrived for STALL_S: the buffer then still holds old samples that would look Good."""
         st, need = self.app.store, int(app_config.QUALITY_SEC * self.fs)
+        if self.eeg_stalled(): return {n: "No signal" for n in self.channels}
         if st.eeg.n < need: return None
         return {n: q[0] for n, q in zip(self.channels, contact_quality(st.eeg.get(need), self.fs))}
 
@@ -292,6 +337,10 @@ class P300BCI(Extension):
         out = []
         if not self.tab.subject.hasAcceptableInput(): out.append("Enter a subject ID (e.g. S01).")
         if not self.app.is_streaming: out.append("Connect the headset and wait for the stream.")
+        elif self.eeg_silence() is None or self.eeg_stalled():
+            silence = self.eeg_silence()
+            out.append("No EEG is arriving" + (f" for {silence:.0f} s" if silence is not None else "") +
+                       " — the headset stopped sending. Disconnect and reconnect it.")
         acquired = self.timeline.counters.get("period_acquired", 0) > 0
         if not acquired:
             out.append(f"Measuring EEG timing ({self.index / self.fs:.0f} of {self.timeline.cfg.min_fit_s:.0f} s)…")
@@ -317,12 +366,15 @@ class P300BCI(Extension):
         """Start button: check, then instructions (optional) → countdown (optional) → session. Nothing is recorded
         before the session begins, so reading time is not part of the data or the timing report."""
         if self.phase != "idle": return False
+        if not self.tab.fixed_seed.isChecked():                  # a new target order every session, saved for rebuilds
+            self.tab.seed.setValue(secrets.randbelow(2_000_000_000))
         cfg = self.tab.read_config()
         blockers = self.blockers(cfg)
         if blockers:
             self.app.show_status("Cannot start: " + blockers[0], 8000); return False
         self.app.set_setting("config", json.dumps(cfg.to_dict()))
         self.app.set_setting("subject", self.tab.subject.text())
+        self.app.set_setting("fixed_seed", self.tab.fixed_seed.isChecked())
         self.subject_id = self.tab.subject.text()
         self.app.set_setting("instructions", self.tab.instr.isChecked())
         self.app.set_setting("language", self.tab.lang.currentData())
@@ -410,7 +462,7 @@ class P300BCI(Extension):
         q = self.contact() or {}
         preset = epochs.PRESETS[self.tab.preset.currentData()]
         config = dict(
-            subject_id=self.subject_id,
+            subject_id=self.subject_id, seed_fixed=self.tab.fixed_seed.isChecked(),
             schedule=cfg.to_dict(), mode=cfg.mode, commands=schedule.COMMANDS, flashing=list(schedule.FLASHING),
             preset=preset.to_dict(), fs=self.fs, channels=self.channels, device=dict(
                 profile=getattr(self.app.view.profile, "id", None), name=getattr(self.app.main_window, "device_name", "")),
@@ -429,7 +481,7 @@ class P300BCI(Extension):
         self.steps_at_start = self.bridge.steps                  # count clock steps of THIS session only
         self.last_contact = None; self._log_contact()             # electrode contact every 2 s → contact.csv
         self.seq_at_start = self._seq_anomalies()
-        self.counts = dict(flashes=0, missed=0, trials=0, no_paint=0)
+        self.counts = dict(flashes=0, missed=0, trials=0, no_paint=0, answered=0, correct=0)
         self.show_window()
         self.window.set_state(lit=None, cue=None, message=instructions.GET_READY_TEXT[self.lang])
         self.runner = schedule.Runner(self.plan, self.mono() + 1.0)
@@ -447,6 +499,7 @@ class P300BCI(Extension):
     def _tick(self):
         if self.runner is None: return
         now = self.mono()
+        if self.eeg_stalled(): self.stop("eeg_stalled"); return
         self._log_contact(now)
         for planned, action in self.runner.pop_due(now):
             self._do(action, planned, now)
@@ -458,7 +511,8 @@ class P300BCI(Extension):
         w, cfg = self.window, self.plan.config
         if a.kind == "trial_start":
             tr = a.ref
-            self.trial_rec = dict(trial=tr.trial, block=tr.block, target=tr.target, start_mono=now, aborted=False)
+            self.trial_rec = dict(trial=tr.trial, block=tr.block, target=tr.target, start_mono=now, aborted=False,
+                                  repetitions=tr.repetitions)
         elif a.kind == "cue_on":
             self.trial_rec["cue_on_mono"] = now
             w.set_state(lit=None, cue=a.ref.target,
@@ -479,6 +533,20 @@ class P300BCI(Extension):
             rec = self.records.get(a.ref.seq)
             if rec is not None: rec.update(off_planned_mono=planned, off_fired_mono=now)
             w.set_state(lit=None, tag=("off", a.ref.seq))
+        elif a.kind == "ask_on":                                 # count question: the flashes of this trial are over
+            self.answer = dict(typed="", confirmed=False, answer_mono=None)
+            self.ask_end = self.runner.t0 + a.ref.ask_off_s
+            self.trial_rec["ask_on_mono"] = now
+            w.set_state(lit=None, cue=None, message="")
+            self._rest_tick(); self._rest.start()
+        elif a.kind == "ask_off":
+            ans, self.answer, self.ask_end = self.answer, None, None
+            self._rest.stop(); w.clear_overlay()
+            value = int(ans["typed"]) if ans and ans["typed"] else None
+            self.trial_rec.update(count_answer=value, answer_mono=ans and ans["answer_mono"],
+                                  count_correct=None if value is None else value == a.ref.repetitions)
+            self.counts["answered"] += value is not None
+            self.counts["correct"] += value == a.ref.repetitions
         elif a.kind == "trial_end":
             self.trial_rec["end_mono"] = now
             self._put("trial", self.trial_rec); self.trial_rec = None
@@ -501,7 +569,10 @@ class P300BCI(Extension):
         st, need = self.app.store, int(app_config.QUALITY_SEC * self.fs)
         if st.eeg.n < need: return
         self.last_contact = now
-        q = [(lvl, float(sig), float(mains)) for lvl, sig, mains in contact_quality(st.eeg.get(need), self.fs)]
+        if self.eeg_stalled():                                   # never log stale samples as Good
+            q = [("No signal", float("nan"), float("nan")) for _ in self.channels]
+        else:
+            q = [(lvl, float(sig), float(mains)) for lvl, sig, mains in contact_quality(st.eeg.get(need), self.fs)]
         self._put("contact", (now, q))
 
     def _seq_anomalies(self):
@@ -514,7 +585,15 @@ class P300BCI(Extension):
 
     def _rest_tick(self):
         """Break between blocks: seconds left, then the same large countdown as before the session for the last
-        ``countdown`` seconds (purely visual; the schedule is unchanged)."""
+        ``countdown`` seconds (purely visual; the schedule is unchanged). Also refreshes the count question. The schedule
+        timer does not fire during a break, so a silent headset is caught here too."""
+        if self.writer is not None and self.eeg_stalled(): self.stop("eeg_stalled"); return
+        if self.window is not None and self.ask_end is not None and self.answer is not None:
+            self._log_contact()
+            self.window.show_question(instructions.QUESTION_TEXT[self.lang], self.answer["typed"],
+                                      max(0.0, self.ask_end - self.mono()), instructions.QUESTION_HINT[self.lang],
+                                      self.answer["confirmed"])
+            return
         if self.rest_end is None or self.window is None: self._rest.stop(); return
         self._log_contact()
         left = self.rest_end - self.mono()
@@ -557,10 +636,27 @@ class P300BCI(Extension):
                 elif k == QtCore.Qt.Key_Left:
                     self._next_page(-1)
             return
+        if self.writer is not None and self.answer is not None and not ev.isAutoRepeat():   # count question
+            self._answer_key(ev); return
         if self.writer is None or self.plan.config.mode != "response_assisted" or ev.isAutoRepeat(): return
         if ev.key() == QtCore.Qt.Key_Space:
             self._put("key", dict(key="space", qt_timestamp_ms=ev.timestamp(), handled_mono=self.mono(),
                                   handled_unix=self.unix()))
+
+    def _answer_key(self, ev):
+        """Digits (up to 2), Backspace, Enter confirms (still editable until the window closes — the schedule never
+        waits for the participant). Every key is logged with its time."""
+        a, k = self.answer, ev.key()
+        if QtCore.Qt.Key_0 <= k <= QtCore.Qt.Key_9 and len(a["typed"]) < 2:
+            a["typed"] += str(k - QtCore.Qt.Key_0); a["confirmed"] = False
+        elif k == QtCore.Qt.Key_Backspace:
+            a["typed"] = a["typed"][:-1]; a["confirmed"] = False
+        elif k in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter) and a["typed"]:
+            a["confirmed"] = True
+        else:
+            return
+        a["answer_mono"] = self.mono()
+        self._rest_tick()
 
     def _window_closed(self):
         self.window = None
@@ -581,6 +677,10 @@ class P300BCI(Extension):
         if writer is None: return None
         self._timer.stop(); self._rest.stop(); self.rest_end = None
         self.runner = None
+        if self.answer is not None and self.trial_rec is not None:      # stopped during the question: keep what was typed
+            self.trial_rec.update(count_answer=int(self.answer["typed"]) if self.answer["typed"] else None,
+                                  answer_mono=self.answer["answer_mono"])
+        self.answer = self.ask_end = None
         now = self.mono()
         if self.cues.enabled:                                    # end of the session: heard by the participant
             self.cues.play("done" if reason == "completed" else "retry")
@@ -608,7 +708,9 @@ class P300BCI(Extension):
             self.window.set_state(lit=None, cue=None, message=instructions.ENDED_TEXT[self.lang].format(reason=reason))
         self.tab.set_running(False)
         if self.app.is_recording: self.app.mark_event("p300 session end")
-        self.app.show_status(f"P300 session ended: {reason}" + ("" if in_time else " (files still closing)"), 8000)
+        msg = ("P300 session stopped: no EEG for over 2 s — the headset went silent; reconnect it before the next "
+               "session" if reason == "eeg_stalled" else f"P300 session ended: {reason}")
+        self.app.show_status(msg + ("" if in_time else " (files still closing)"), 12000)
         if reason == "completed": self.analyse(writer.folder, wait=writer)
         return in_time
 
@@ -666,6 +768,8 @@ class P300BCI(Extension):
             done = self.counts
             sess = (f"running · trial {done['trials'] + 1}/{len(self.plan.trials)} · flash {done['flashes']}/"
                     f"{len(self.plan.stims)} · {self.writer.folder.name}")
+            if self.plan.config.ask_s > 0:
+                sess += f" · counts right {done['correct']}/{done['trials']}"
         else:
             sess = "idle" + (f" · last: {self.last_folder.name}" if self.last_folder else "")
         late = timing.dist([r for r in self.hook_s[-200:]]) if self.hook_s else None
@@ -674,7 +778,11 @@ class P300BCI(Extension):
         timing_so_far = (f"missed {self.counts['missed']} of {self.counts['flashes']} flashes{warn} · writer backlog "
                          f"{self.writer.q.qsize() if self.writer else 0} · EEG hook p95 "
                          f"{late['p95'] if late else '—'} ms")
-        return {"Stream": "streaming" if self.app.is_streaming else "not connected",
+        silence = self.eeg_silence()
+        stream = ("not connected" if not self.app.is_streaming else
+                  f"⚠ connected but NO EEG for {silence:.0f} s — reconnect the headset" if self.eeg_stalled() else
+                  "waiting for EEG…" if silence is None else "streaming")
+        return {"Stream": stream,
                 "EEG timing": timing_txt,
                 "Contact": ", ".join(f"{c} {q.get(c, '—')}" for c in preset.channels) if q else "—",
                 "Session": sess, "Timing so far": timing_so_far}

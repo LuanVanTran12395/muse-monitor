@@ -192,5 +192,6 @@ def analyse_session(session, preset, fit_timeline, timeline="fit", causal=False)
     ep, times, reasons = extract(y, t, fs, onsets, preset, eeg["segment"], uncertain, missed)
     targets = [bool(s.get("is_target")) for s in st]
     return dict(epochs=ep, times=times, reasons=reasons, is_target=targets, erp=erp(ep, targets, reasons),
+                trial=[s.get("trial") for s in st], block=[s.get("block") for s in st],
                 counts=reason_counts(reasons), preset=preset.to_dict(), timeline=timeline,
                 incomplete=not cfg.get("completed"), mode=cfg.get("mode"))

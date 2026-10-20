@@ -2,7 +2,10 @@
 
 Structure (debate/claude-p300-extension-proposal.md §4.1):
     block → trials → [cue on target][blank] R repetitions × (every flashing cell once, random order) [tail]
+                     [count question, optional]
     rest between blocks.
+R can vary per trial (``repetitions ± repetitions_jitter``, drawn from the seed) so the count the participant reports
+at the optional question is not always the same number (attention check).
 Times are seconds relative to the session start ``t0``; the runner adds the monotonic ``t0`` when it starts.
 """
 import random
@@ -27,6 +30,8 @@ class Config:
     iti_s: float = 1.0              # between trials
     seed: int = 1
     mode: str = "eeg_only"          # "eeg_only" | "response_assisted" (Space recorded, results reported apart)
+    repetitions_jitter: int = 0     # R of each trial drawn uniformly in repetitions ± this (0 = every trial R)
+    ask_s: float = 0.0              # after each trial: "how many times did the target flash?" window (0 = no question)
 
     def errors(self):
         """Human-readable problems; empty = valid."""
@@ -35,6 +40,10 @@ class Config:
         if not 0.05 <= self.flash_s <= self.soa_s - 0.05:
             e.append("Flash duration must be at least 50 ms and 50 ms shorter than the interval.")
         if not 1 <= self.repetitions <= 30: e.append("Repetitions must be 1–30.")
+        j = self.repetitions_jitter
+        if not isinstance(j, int) or j < 0 or self.repetitions - j < 1 or self.repetitions + j > 30:
+            e.append("Repetition variation must keep every trial within 1–30 repetitions.")
+        if not (self.ask_s == 0 or 2 <= self.ask_s <= 20): e.append("Count question must be 0 (off) or 2–20 s.")
         if not 1 <= self.trials_per_block <= 100: e.append("Trials per block must be 1–100.")
         if not 1 <= self.blocks <= 20: e.append("Blocks must be 1–20.")
         if not 0 <= self.rest_s <= 600: e.append("Rest must be 0–600 s.")
@@ -69,6 +78,9 @@ class Trial:
     cue_off_s: float
     first_flash_s: float
     end_s: float
+    repetitions: int = 0            # R of this trial (= the right answer to the count question)
+    ask_on_s: float = None          # count question window (None = no question)
+    ask_off_s: float = None
 
 
 @dataclass
@@ -112,7 +124,10 @@ def build(config):
             cue_on, cue_off = t, t + config.cue_s
             first = cue_off + config.blank_s
             last_cell, k = None, 0
-            for rep in range(config.repetitions):
+            reps = config.repetitions
+            if config.repetitions_jitter:           # drawn only when used: plans of older configs stay identical
+                reps = rng.randint(reps - config.repetitions_jitter, reps + config.repetitions_jitter)
+            for rep in range(reps):
                 order = _repetition(rng, last_cell)
                 for cell in order:
                     on = first + k * config.soa_s
@@ -120,7 +135,10 @@ def build(config):
                     seq += 1; k += 1
                 last_cell = order[-1]
             end = first + (k - 1) * config.soa_s + config.flash_s + config.tail_s
-            plan.trials.append(Trial(n_trial, block, target, cue_on, cue_off, first, end))
+            ask_on = ask_off = None
+            if config.ask_s > 0:                    # after the tail: no flash epoch contains the key presses
+                ask_on, ask_off = end, end + config.ask_s; end = ask_off
+            plan.trials.append(Trial(n_trial, block, target, cue_on, cue_off, first, end, reps, ask_on, ask_off))
             n_trial += 1
             t = end + config.iti_s
         if block < config.blocks - 1 and config.rest_s > 0:
@@ -134,7 +152,8 @@ def build(config):
 class Action:
     t_s: float                      # relative to t0
     order: int                      # tie-break: offs before ons at the same instant
-    kind: str = field(compare=False)  # cue_on | cue_off | flash_on | flash_off | trial_start | trial_end | rest_on | rest_off | done
+    kind: str = field(compare=False)  # cue_on | cue_off | flash_on | flash_off | ask_on | ask_off | trial_start |
+                                      # trial_end | rest_on | rest_off | done
     ref: object = field(compare=False, default=None)   # Stim, Trial or (start, end)
 
 
@@ -143,6 +162,8 @@ def actions(plan):
     for tr in plan.trials:
         out += [Action(tr.cue_on_s, 2, "trial_start", tr), Action(tr.cue_on_s, 3, "cue_on", tr),
                 Action(tr.cue_off_s, 1, "cue_off", tr), Action(tr.end_s, 0, "trial_end", tr)]
+        if tr.ask_on_s is not None:                 # the answer is closed before the trial row is written
+            out += [Action(tr.ask_on_s, 2, "ask_on", tr), Action(tr.ask_off_s, -1, "ask_off", tr)]
     for st in plan.stims:
         out += [Action(st.on_s, 3, "flash_on", st), Action(st.off_s, 1, "flash_off", st)]
     for r in plan.rests:
