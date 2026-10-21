@@ -52,6 +52,11 @@ synthetic signals; their thresholds come from short sessions with one person (se
 PYTHONPATH=src python -m musemonitor
 ```
 
+**Packaged app (trial, macOS Apple Silicon):** a `.dmg` built by `.github/workflows/build.yml` needs no Python —
+drag *Muse Monitor* to Applications; the first time, right-click → Open (not signed with an Apple Developer ID); allow
+Bluetooth when asked. `Muse Monitor --self-check` checks every feature without a headset. Windows comes next. How it
+is built: [packaging/README.md](packaging/README.md).
+
 Requirements: Python ≥ 3.10 and the packages in `requirements.txt` (BrainFlow ≥ 5.23, PySide6, pyqtgraph,
 numpy, scipy, bleak). macOS asks for **Bluetooth** access for the app that runs Muse Monitor
 (Terminal or VS Code) the first time. Close any other app connected to the headset — BLE allows one

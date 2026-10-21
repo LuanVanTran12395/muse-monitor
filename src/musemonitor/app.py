@@ -1,8 +1,9 @@
 import sys
+from pathlib import Path
 
 import pyqtgraph as pg
 from brainflow.board_shim import BoardShim
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import config as C
 from .device.profiles import discover_profiles
@@ -40,10 +41,32 @@ class WindowManager(QtCore.QObject):
 
 
 def main(argv=None):
+    """Start the app. Options (for checking an installation, e.g. a packaged build):
+        --self-check [--report FILE]   exercise every feature without a headset, print OK / FAIL / SKIP (and write them
+                            to FILE), exit 0 if all passed
+        --quit-after SEC    open the app normally, then quit after SEC seconds (a smoke test of a real start)"""
+    argv = list(sys.argv if argv is None else argv)
+    if "--self-check" in argv:                     # --report FILE: also write the lines to FILE (a windowed app
+        from .selfcheck import run                  # on Windows has no console to print to)
+        report = argv[argv.index("--report") + 1] if "--report" in argv else None
+        lines = []
+        def out(line):
+            lines.append(line)
+            if sys.stdout is not None: print(line, flush=True)
+        code = run(out=out)
+        if report: Path(report).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return code
+    quit_after = None
+    if "--quit-after" in argv:
+        i = argv.index("--quit-after")
+        quit_after = float(argv[i + 1]); del argv[i:i + 2]
     BoardShim.enable_dev_board_logger()
-    app = QtWidgets.QApplication(sys.argv if argv is None else argv)
+    app = QtWidgets.QApplication(argv)
     apply_app_style(app)                   # Fusion (honours the light/dark palette) + checkbox fix
+    icon = Path(__file__).resolve().parent / "ui" / "app_icon.png"      # packaging/icon/icon.svg → make_icons.py
+    if icon.exists(): app.setWindowIcon(QtGui.QIcon(str(icon)))
     pg.setConfigOptions(antialias=False)
     manager = WindowManager(discover_profiles())
     manager.open()
+    if quit_after is not None: QtCore.QTimer.singleShot(int(quit_after * 1000), app.quit)
     return app.exec()

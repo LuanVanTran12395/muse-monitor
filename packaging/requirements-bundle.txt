@@ -1,0 +1,13 @@
+# What the packaged app contains — fixed versions, so a release does not depend on the build machine.
+# Installed alone in a clean environment by the build (CI or packaging/README.md), then frozen by PyInstaller.
+# Features in the release: the monitor, every bundled extension and study, camera recenter and demo video (OpenCV),
+# Lab Streaming Layer (pylsl ships liblsl). `musemonitor --self-check` exercises each of them.
+brainflow==5.23.0
+PySide6==6.11.2
+pyqtgraph==0.14.0
+numpy==2.2.6
+scipy==1.15.3
+bleak==3.0.2
+opencv-python-headless==5.0.0.93
+pylsl==1.18.5
+pyinstaller==6.16.0

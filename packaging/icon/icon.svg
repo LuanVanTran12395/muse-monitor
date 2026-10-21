@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Muse Monitor app icon — design "A — Vòng headband + EEG" (design-A-headband-eeg.pdf).
+       Source of truth: edit this file, then run  python packaging/icon/make_icons.py
+       Colours: background #0F1828 · disc #13253F · headband #E6EDF7 · electrodes and EEG #3DDBB5 -->
+  <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230" fill="#0F1828"/>
+  <!-- the head (a disc) -->
+  <circle cx="512" cy="625" r="374" fill="#13253F"/>
+  <!-- the headband: an arc over the head -->
+  <path d="M 200 660 L 200 622 A 312 312 0 0 1 824 622 L 824 660" fill="none" stroke="#E6EDF7"
+        stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- four electrodes on the band (TP9, AF7, AF8, TP10) -->
+  <g fill="#3DDBB5" stroke="#0F1828" stroke-width="24">
+    <circle cx="217" cy="516" r="50"/>
+    <circle cx="379" cy="340" r="50"/>
+    <circle cx="645" cy="340" r="50"/>
+    <circle cx="807" cy="516" r="50"/>
+  </g>
+  <!-- an EEG trace -->
+<path d="M 191.1 760.6 C 205.6 760.6 258.5 766.2 278.3 760.6 C 298.1 755.0 300.5 720.4 309.8 727.2 C 319.1 734.0 325.2 807.6 333.9 801.4 C 342.5 795.2 352.4 685.5 361.7 690.1 C 371.0 694.7 379.7 819.9 389.6 829.2 C 399.5 838.5 411.5 753.4 421.1 745.7 C 430.7 738.0 438.5 780.3 447.1 782.8 C 455.8 785.3 456.3 764.3 473.0 760.6 C 489.7 756.9 531.1 768.3 547.2 760.6 C 563.3 752.9 560.8 728.1 569.5 714.2 C 578.2 700.3 589.3 675.9 599.2 677.1 C 609.1 678.3 619.6 693.8 628.9 721.6 C 638.2 749.4 646.1 826.2 654.8 844.1 C 663.4 862.0 671.5 841.0 680.8 829.2 C 690.1 817.5 700.6 785.0 710.5 773.6 C 720.4 762.2 719.3 762.8 740.0 760.6 C 760.7 758.4 819.0 760.6 834.8 760.6"
+        fill="none" stroke="#3DDBB5" stroke-width="27" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

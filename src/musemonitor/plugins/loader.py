@@ -13,15 +13,30 @@ from .api import Extension
 
 ENTRY_POINT_GROUP = "musemonitor.extensions"
 ENV_VAR = "MUSEMONITOR_EXTENSIONS"
-PROJECT_DIR = Path(__file__).resolve().parents[3] / "extensions"   # <repo>/extensions (when running from src/)
-STUDY_DIR = Path(__file__).resolve().parents[3] / "study"           # <repo>/study: research studies (e.g. p300_bci)
+REPO_ROOT = Path(__file__).resolve().parents[3]                   # <repo> when running from src/
+PROJECT_DIR = REPO_ROOT / "extensions"                              # <repo>/extensions
+STUDY_DIR = REPO_ROOT / "study"                                     # <repo>/study: research studies (e.g. p300_bci)
 USER_DIR = Path.home() / ".musemonitor" / "extensions"
 
 
+def frozen():
+    """True in a packaged app (PyInstaller sets sys.frozen and sys._MEIPASS, the read-only resource folder)."""
+    return bool(getattr(sys, "frozen", False)) and bool(getattr(sys, "_MEIPASS", None))
+
+
+def bundled_dirs():
+    """(extensions, study) folders: inside the packaged app when frozen, else next to the source."""
+    if frozen():
+        root = Path(sys._MEIPASS)
+        return root / "extensions", root / "study"
+    return PROJECT_DIR, STUDY_DIR
+
+
 def search_dirs():
-    """Extension folders in priority order: environment variable → project folder → studies folder → user folder."""
+    """Extension folders in priority order: environment variable → project folder → studies folder → user folder.
+    In a packaged app the project and studies folders are the bundled (read-only) ones."""
     dirs = [Path(p).expanduser() for p in os.environ.get(ENV_VAR, "").split(os.pathsep) if p]
-    dirs += [PROJECT_DIR, STUDY_DIR, USER_DIR]
+    dirs += [*bundled_dirs(), USER_DIR]
     out = []
     for d in dirs:
         if d.is_dir() and d.resolve() not in [o.resolve() for o in out]: out.append(d)
@@ -29,7 +44,9 @@ def search_dirs():
 
 
 def default_dir():
-    """Default folder for creating new extensions / opening from the UI."""
+    """Default folder for creating new extensions / opening from the UI. Never inside a packaged app (read-only, and
+    writing there would break its signature): the user folder then."""
+    if frozen(): return USER_DIR
     return PROJECT_DIR if PROJECT_DIR.is_dir() else USER_DIR
 
 

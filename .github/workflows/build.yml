@@ -1,0 +1,50 @@
+name: build
+
+# The packaged app (packaging/README.md). Run it from the Actions tab, or push a v* tag to attach it to a release.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: app (macOS Apple Silicon)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the bundle's dependencies (fixed versions)
+        run: python -m pip install -r packaging/requirements-bundle.txt
+      - name: Build
+        run: pyinstaller packaging/musemonitor.spec --noconfirm --distpath dist --workpath build
+      - name: Self-check of the built app
+        run: |
+          "dist/Muse Monitor.app/Contents/MacOS/Muse Monitor" --self-check --report selfcheck.txt
+          cat selfcheck.txt
+      - name: Start the app and quit (smoke test)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          MUSEMONITOR_DATA_DIR: ${{ runner.temp }}/data
+        run: |
+          "dist/Muse Monitor.app/Contents/MacOS/Muse Monitor" --quit-after 8 &
+          pid=$!; ( sleep 60; kill -9 $pid 2>/dev/null ) & watchdog=$!
+          wait $pid; code=$?; kill $watchdog 2>/dev/null || true
+          echo "exit code $code"; test $code -eq 0
+      - name: Disk image
+        run: packaging/make_dmg.sh dist MuseMonitor-macos-arm64.dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MuseMonitor-macos-arm64
+          path: |
+            MuseMonitor-macos-arm64.dmg
+            selfcheck.txt
+      - name: Attach to the release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" MuseMonitor-macos-arm64.dmg --generate-notes || gh release upload "$GITHUB_REF_NAME" MuseMonitor-macos-arm64.dmg --clobber
