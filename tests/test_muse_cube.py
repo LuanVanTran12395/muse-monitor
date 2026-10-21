@@ -1266,3 +1266,28 @@ def test_ring_buttons_of_one_cluster_do_not_overlap(mc):
             pts = [pt for ax, coord, *_ in L.rings() if ax == axis for pt in L.label_points(ax, coord)]
             d = min(np.linalg.norm(a - b) for i, a in enumerate(pts) for b in pts[i + 1:])
             assert d >= 0.05 * 600                                                        # ≥ 30 px at 600 px wide
+
+
+def test_the_sound_checkbox_works_without_the_camera(qapp, spec, settings, monkeypatch, tmp_path):
+    """Its connection once sat inside _camera_toggled: no effect until the camera was on, then a NameError."""
+    from musemonitor.ui import main_window as mw
+    monkeypatch.setattr(mw.MainWindow, "start_scan", lambda self: None)
+    monkeypatch.setenv("MUSEMONITOR_DATA_DIR", str(tmp_path / "data"))
+    ext_dir = tmp_path / "exts"
+    shutil.copytree(REPO / "extensions" / "muse_cube", ext_dir / "muse_cube", ignore=shutil.ignore_patterns("__pycache__"))
+    w = mw.MainWindow(spec, settings=settings, extension_dirs=[str(ext_dir)]); w.show()
+    try:
+        ext = next(r for r in w.extensions.records if r.id == "muse_cube").instance
+        box = ext.tab.sound
+        box.setChecked(True); box.setChecked(False)
+        assert ext.cues.enabled is False and str(ext.app.setting("sound")).lower() in ("false", "0")
+        box.setChecked(True)
+        assert ext.cues.enabled is True
+        assert box.receivers(QtCore_SIGNAL("toggled(bool)")) == 1          # connected once, in __init__
+    finally:
+        w.close()
+
+
+def QtCore_SIGNAL(sig):
+    from PySide6 import QtCore
+    return QtCore.SIGNAL(sig)

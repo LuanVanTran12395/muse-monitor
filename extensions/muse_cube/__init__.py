@@ -95,6 +95,7 @@ class MuseCubeTab(BaseTab):
         self.tilt_check.toggled.connect(lambda on: (ext.app.set_setting("cube_tilt", on), ext.refresh()))
         self.eyejaw_check.toggled.connect(lambda on: (ext.app.set_setting("cube_eyejaw", on), ext.refresh()))
         self.cam_check.toggled.connect(self._camera_toggled)
+        self.sound.toggled.connect(lambda on: (ext.app.set_setting("sound", on), setattr(ext.cues, "enabled", on)))
 
     def _camera_toggled(self, on):
         c = self.ext.controller
@@ -108,7 +109,6 @@ class MuseCubeTab(BaseTab):
             self.cam_check.blockSignals(True); self.cam_check.setChecked(False); self.cam_check.blockSignals(False)
             self.ext.app.show_status(f"Camera unavailable: {msg}")
         self.ext.refresh()
-        self.sound.toggled.connect(lambda on: (ext.app.set_setting("sound", on), setattr(ext.cues, "enabled", on)))
 
     def sync(self, n, depth, style, lang):
         for wdg in (self.size_box, self.depth_box, self.style_box, self.lang_box): wdg.blockSignals(True)
